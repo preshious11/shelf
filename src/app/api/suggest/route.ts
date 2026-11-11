@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         updated: 0,
         error: 'Suggestions unavailable right now',
-        message: 'GEMINI_API_KEY is not configured or invalid',
+        message: 'GEMINI_API_KEY is not configured in environment variables. If you are on Vercel, please add GEMINI_API_KEY to your Vercel Project Settings > Environment Variables and redeploy.',
       });
     }
 
@@ -137,6 +137,7 @@ Rules:
     const candidateModels = [
       process.env.GEMINI_MODEL || 'gemini-3.5-flash',
       'gemini-3.5-flash-lite',
+      'gemini-2.5-flash',
       'gemini-3.8-flash',
     ];
 
