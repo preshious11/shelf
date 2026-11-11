@@ -10,7 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (data.shelf_app_url) {
       appUrlInput.value = data.shelf_app_url;
     } else {
-      appUrlInput.value = 'http://localhost:3000';
+      appUrlInput.value = 'https://shelf-drab-kappa.vercel.app';
     }
     if (data.shelf_api_token) {
       apiTokenInput.value = data.shelf_api_token;
@@ -61,7 +61,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       );
     } catch {
-      showStatus('Invalid App URL. Please enter a valid URL (e.g. http://localhost:3000 or https://shelf.vercel.app).', true);
+      showStatus('Invalid App URL. Please enter a valid URL (e.g. https://shelf-drab-kappa.vercel.app).', true);
     }
   });
 

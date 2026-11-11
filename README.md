@@ -110,7 +110,7 @@
    * Copy the raw `shf_...` token. *(It is stored as a SHA-256 hash and won't be shown again).*
 6. Configure the Extension:
    * Right-click the Shelf extension icon in your Chrome toolbar and select **Options** (or click the extension icon and select **Options**).
-   * Enter your **Shelf Web App URL** (`http://localhost:3000` or your Vercel URL).
+   * Enter your **Shelf Web App URL** (`https://shelf-drab-kappa.vercel.app` or `http://localhost:3000`).
    * Paste your **Personal API Token**.
    * Click **Save Configuration**, then click **Test Connection** to verify that your web app accepts the token.
 

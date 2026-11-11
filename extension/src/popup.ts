@@ -8,7 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
   chrome.storage.sync.get(
     ['shelf_last_sync_time', 'shelf_last_sync_count', 'shelf_app_url'],
     (data) => {
-      const appUrl = data.shelf_app_url || 'http://localhost:3005';
+      const appUrl = data.shelf_app_url || 'https://shelf-drab-kappa.vercel.app';
 
       if (data.shelf_last_sync_time) {
         const d = new Date(data.shelf_last_sync_time);

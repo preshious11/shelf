@@ -10,7 +10,7 @@ async function getStoredSettings(): Promise<{ appUrl: string; apiToken: string }
   return new Promise((resolve) => {
     chrome.storage.sync.get(['shelf_app_url', 'shelf_api_token'], (res) => {
       resolve({
-        appUrl: res.shelf_app_url || 'http://localhost:3005',
+        appUrl: res.shelf_app_url || 'https://shelf-drab-kappa.vercel.app',
         apiToken: res.shelf_api_token || '',
       });
     });
