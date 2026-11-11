@@ -4,10 +4,11 @@ import { SELECTORS, querySelectorAllFirst } from './selectors';
 // Global state
 let isCapturing = false;
 let shouldStop = false;
-let capturedCount = 0;
+let newlySavedCount = 0;
+let alreadySavedCount = 0;
 let floatingWidget: HTMLElement | null = null;
 
-// Helper to delay with randomized pacing (1.2 to 2.2 seconds)
+// Helper to delay with randomized pacing
 function randomDelay(minMs = 1200, maxMs = 2200): Promise<void> {
   const ms = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -25,6 +26,20 @@ function isBookmarksOrHistoryPage(): boolean {
     path.includes('/bookmarks') ||
     path.includes('/history')
   );
+}
+
+// Fetch existing tweet IDs already saved in Shelf
+async function fetchKnownIdsViaBackground(): Promise<Set<string>> {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: 'GET_KNOWN_IDS' }, (res) => {
+      if (chrome.runtime.lastError || !res || !res.success || !Array.isArray(res.knownIds)) {
+        console.warn('[Shelf] Could not fetch known IDs from background, starting fresh');
+        resolve(new Set());
+        return;
+      }
+      resolve(new Set(res.knownIds.map((id: any) => String(id))));
+    });
+  });
 }
 
 // Send batch via Background Service Worker
@@ -95,13 +110,63 @@ function findTweetElements(doc: Document): Element[] {
   return Array.from(containers);
 }
 
-// Scroll timeline down
-function scrollTimeline(): void {
-  window.scrollBy({
-    top: window.innerHeight * 0.85,
-    behavior: 'smooth',
-  });
+// Check if Twitter is actively loading the next batch of tweets
+function isTwitterLoading(): boolean {
+  return !!(
+    document.querySelector('div[role="progressbar"]') ||
+    document.querySelector('[aria-label="Loading…"]') ||
+    document.querySelector('[aria-label="Loading"]') ||
+    document.querySelector('svg[aria-label="Loading"]')
+  );
+}
 
+// Check and click any "Retry" / "Try again" buttons rendered by Twitter on error or rate-limit
+function checkAndClickRetry(): boolean {
+  const candidates = Array.from(document.querySelectorAll('button, div[role="button"]'));
+  for (const el of candidates) {
+    const txt = (el.textContent || '').trim().toLowerCase();
+    if (txt === 'retry' || txt === 'try again') {
+      console.log('[Shelf] Twitter retry button detected, clicking...');
+      (el as HTMLElement).click();
+      return true;
+    }
+  }
+  return false;
+}
+
+// Trigger deep scroll and re-intersection for Twitter's virtualized infinite feed
+function triggerDeepScroll(): void {
+  checkAndClickRetry();
+
+  // Dispatch synthetic wheel & scroll events
+  window.dispatchEvent(new Event('scroll'));
+  window.dispatchEvent(new WheelEvent('wheel', { deltaY: 350, bubbles: true }));
+
+  const scrollHeight = Math.max(
+    document.documentElement.scrollHeight,
+    document.body.scrollHeight
+  );
+  const currentY = window.scrollY || window.pageYOffset;
+  const isNearBottom = currentY + window.innerHeight >= scrollHeight - 350;
+
+  if (isNearBottom) {
+    // Micro-bounce: scroll up 450px then back to absolute bottom to trigger Twitter's bottom sentinel
+    window.scrollBy({ top: -450, behavior: 'auto' });
+    setTimeout(() => {
+      window.scrollTo({
+        top: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight),
+        behavior: 'smooth',
+      });
+      window.dispatchEvent(new Event('scroll'));
+    }, 180);
+  } else {
+    window.scrollBy({
+      top: window.innerHeight * 0.9,
+      behavior: 'smooth',
+    });
+  }
+
+  // Also check and scroll container elements if Twitter uses an internal scroll container
   const scrollables = [
     document.querySelector('main'),
     document.querySelector('div[data-testid="primaryColumn"]'),
@@ -109,16 +174,16 @@ function scrollTimeline(): void {
   ];
   for (const el of scrollables) {
     if (el && el.scrollHeight > el.clientHeight && el.clientHeight > 0) {
-      el.scrollBy({ top: window.innerHeight * 0.85, behavior: 'smooth' });
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 250) {
+        el.scrollBy({ top: -350, behavior: 'auto' });
+        setTimeout(() => {
+          el.scrollTop = el.scrollHeight;
+        }, 150);
+      } else {
+        el.scrollBy({ top: window.innerHeight * 0.9, behavior: 'smooth' });
+      }
     }
   }
-}
-
-// Micro bounce to trigger virtualized loading
-function scrollBounce(): void {
-  window.scrollBy({ top: -140, behavior: 'auto' });
-  const col = document.querySelector('div[data-testid="primaryColumn"]');
-  if (col) col.scrollBy({ top: -140, behavior: 'auto' });
 }
 
 // Create and inject the floating widget
@@ -153,7 +218,7 @@ function createFloatingWidget() {
 function renderWidgetContent(
   container: HTMLElement,
   state: 'idle' | 'capturing' | 'done' | 'error',
-  info?: { count?: number; message?: string }
+  info?: { newCount?: number; existingCount?: number; message?: string }
 ) {
   if (state === 'idle') {
     const isSpecialPage = isBookmarksOrHistoryPage();
@@ -192,6 +257,9 @@ function renderWidgetContent(
       startCapture();
     });
   } else if (state === 'capturing') {
+    const newCount = info?.newCount || 0;
+    const existingCount = info?.existingCount || 0;
+
     container.innerHTML = `
       <div style="
         display: flex;
@@ -214,7 +282,10 @@ function renderWidgetContent(
           box-shadow: 0 0 10px #38BDF8;
           animation: pulse 1.5s infinite;
         "></div>
-        <span>Saving bookmarks: <strong>${info?.count || 0}</strong></span>
+        <div style="display: flex; flex-direction: column; line-height: 1.2;">
+          <span>Saving: <strong>${newCount} new</strong></span>
+          ${existingCount > 0 ? `<span style="font-size: 10px; color: #A1A1AA;">${existingCount} already in Shelf</span>` : `<span style="font-size: 10px; color: #38BDF8;">Scanning timeline...</span>`}
+        </div>
         <button id="shelf-btn-stop" style="
           background: #27272A;
           color: #F4F4F5;
@@ -285,16 +356,21 @@ async function startCapture() {
 
   isCapturing = true;
   shouldStop = false;
-  capturedCount = 0;
+  newlySavedCount = 0;
+  alreadySavedCount = 0;
 
   if (floatingWidget) {
-    renderWidgetContent(floatingWidget, 'capturing', { count: 0 });
+    renderWidgetContent(floatingWidget, 'capturing', { newCount: 0, existingCount: 0 });
   }
 
-  const seenIds = new Set<string>();
-  let noNewTweetsRounds = 0;
+  console.log('[Shelf] Fetching known bookmark IDs from Shelf library...');
+  const knownInShelf = await fetchKnownIdsViaBackground();
+  console.log(`[Shelf] Library currently contains ${knownInShelf.size} bookmarks.`);
 
-  console.log('[Shelf] Starting capture on:', window.location.href);
+  const seenInSession = new Set<string>();
+  let noNewTweetsRounds = 0;
+  const maxIdleRounds = 35; // Patient 35 rounds (~60-80s) of scrolling before completing
+  let lastScrollHeight = document.documentElement.scrollHeight;
 
   try {
     // If no tweets immediately visible, wait 800ms for X timeline to mount
@@ -305,74 +381,106 @@ async function startCapture() {
       initialElements = findTweetElements(document);
     }
 
-    while (!shouldStop && noNewTweetsRounds < 15) {
-      // 1. Find all candidate tweet elements in DOM
-      const tweetElements = findTweetElements(document);
-      console.log(`[Shelf] Scan found ${tweetElements.length} candidate elements in DOM`);
+    while (!shouldStop && noNewTweetsRounds < maxIdleRounds) {
+      // 1. Check if Twitter network loading spinner is actively visible
+      if (isTwitterLoading()) {
+        console.log('[Shelf] Twitter is fetching more tweets from network, waiting...');
+        noNewTweetsRounds = Math.max(0, noNewTweetsRounds - 1);
+        await randomDelay(1200, 2000);
+        continue;
+      }
 
+      // 2. Check if timeline expanded in height
+      const currentScrollHeight = document.documentElement.scrollHeight;
+      if (currentScrollHeight > lastScrollHeight) {
+        lastScrollHeight = currentScrollHeight;
+        noNewTweetsRounds = 0;
+      }
+
+      // 3. Find candidate tweet elements in DOM
+      const tweetElements = findTweetElements(document);
       const batchToProcess: ExtractedTweet[] = [];
+      let discoveredThisPass = 0;
 
       for (const el of tweetElements) {
         if (shouldStop) break;
 
         const tweet = extractTweetFromElement(el);
-        if (tweet && !seenIds.has(tweet.tweet_id)) {
-          seenIds.add(tweet.tweet_id);
+        if (!tweet) continue;
+
+        // Check if tweet is already stored in Shelf
+        if (knownInShelf.has(tweet.tweet_id)) {
+          if (!seenInSession.has(tweet.tweet_id)) {
+            seenInSession.add(tweet.tweet_id);
+            alreadySavedCount++;
+            discoveredThisPass++;
+            console.log(`[Shelf] Tweet ${tweet.tweet_id} already in Shelf. Skipping.`);
+          }
+          continue;
+        }
+
+        // Brand new tweet to save!
+        if (!seenInSession.has(tweet.tweet_id)) {
+          seenInSession.add(tweet.tweet_id);
           batchToProcess.push(tweet);
-          capturedCount++;
-          console.log(`[Shelf] Extracted tweet ${tweet.tweet_id} by @${tweet.author_handle}`);
+          newlySavedCount++;
+          discoveredThisPass++;
+          console.log(`[Shelf] Found new bookmark: ${tweet.tweet_id} by @${tweet.author_handle}`);
         }
       }
 
       // Update widget count in real-time
       if (floatingWidget) {
-        renderWidgetContent(floatingWidget, 'capturing', { count: capturedCount });
+        renderWidgetContent(floatingWidget, 'capturing', {
+          newCount: newlySavedCount,
+          existingCount: alreadySavedCount,
+        });
       }
 
-      // Send batch immediately if any new tweets were discovered
+      // Send new bookmarks batch immediately
       if (batchToProcess.length > 0) {
         noNewTweetsRounds = 0;
-        console.log(`[Shelf] Sending batch of ${batchToProcess.length} bookmarks to Shelf...`);
+        console.log(`[Shelf] Transmitting ${batchToProcess.length} new bookmarks to Shelf...`);
         try {
           const res = await sendBatchViaBackground(batchToProcess);
           console.log('[Shelf] Ingest response:', res);
+          // Mark as known in Shelf
+          batchToProcess.forEach((t) => knownInShelf.add(t.tweet_id));
         } catch (sendErr) {
           console.error('[Shelf] Send error:', sendErr);
         }
+      } else if (discoveredThisPass > 0) {
+        // Discovered existing tweets, which means we are progressing through the feed!
+        noNewTweetsRounds = 0;
       } else {
         noNewTweetsRounds++;
-        console.log(`[Shelf] No new tweets in this pass (round ${noNewTweetsRounds}/15)`);
+        console.log(`[Shelf] Advancing timeline (idle pass ${noNewTweetsRounds}/${maxIdleRounds})...`);
       }
 
       if (shouldStop) break;
 
-      // Scroll timeline
-      scrollTimeline();
-
-      // Micro-bounce if waiting for Twitter GraphQL request
-      if (noNewTweetsRounds >= 2) {
-        scrollBounce();
-        await randomDelay(350, 550);
-        scrollTimeline();
-      }
+      // Deep scroll and micro-bounce
+      triggerDeepScroll();
 
       // Human-like randomized delay
-      await randomDelay(1200, 2200);
+      await randomDelay(1200, 2000);
     }
 
     // Save sync info to chrome.storage
     chrome.storage.sync.set({
       shelf_last_sync_time: new Date().toISOString(),
-      shelf_last_sync_count: capturedCount,
+      shelf_last_sync_count: newlySavedCount,
     });
 
     let finishMessage = '';
-    if (capturedCount === 0) {
+    if (newlySavedCount > 0) {
+      finishMessage = `Saved ${newlySavedCount} new bookmarks! (${alreadySavedCount} already in Shelf)`;
+    } else if (alreadySavedCount > 0) {
+      finishMessage = `All ${alreadySavedCount} bookmarks are already in Shelf!`;
+    } else {
       finishMessage = isBookmarksOrHistoryPage()
         ? 'No bookmarks detected in this view'
         : 'No posts found on this page';
-    } else {
-      finishMessage = `Saved ${capturedCount} bookmarks to Shelf`;
     }
 
     if (floatingWidget) {

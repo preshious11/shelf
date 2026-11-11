@@ -17,6 +17,34 @@ async function getStoredSettings(): Promise<{ appUrl: string; apiToken: string }
   });
 }
 
+// Fetch all known tweet_ids already saved in Shelf
+async function fetchKnownBookmarkIds(): Promise<{ success: boolean; knownIds?: string[]; error?: string }> {
+  const { appUrl, apiToken } = await getStoredSettings();
+  if (!apiToken) {
+    return { success: false, error: 'API Token not configured in extension options' };
+  }
+
+  const endpoint = `${appUrl.replace(/\/$/, '')}/api/ingest`;
+  try {
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      return { success: false, error: `HTTP ${response.status}` };
+    }
+
+    const data = await response.json();
+    return { success: true, knownIds: data.existing_ids || [] };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Network error';
+    return { success: false, error: msg };
+  }
+}
+
 // Ingest batch to Shelf web app
 async function sendBatchToShelf(batch: unknown[]): Promise<{ added: number; skipped: number }> {
   const { appUrl, apiToken } = await getStoredSettings();
@@ -60,10 +88,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })
       .catch((err: unknown) => {
         const errorMsg = err instanceof Error ? err.message : 'Unknown ingest error';
-        console.error('Background ingest error:', errorMsg);
+        console.error('[Shelf Background] Ingest error:', errorMsg);
         sendResponse({ success: false, error: errorMsg });
       });
     return true; // Keep message channel open for async response
+  }
+
+  if (message.type === 'GET_KNOWN_IDS') {
+    fetchKnownBookmarkIds()
+      .then((result) => {
+        sendResponse(result);
+      })
+      .catch((err: unknown) => {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to get known IDs';
+        console.error('[Shelf Background] Known IDs error:', errorMsg);
+        sendResponse({ success: false, error: errorMsg });
+      });
+    return true;
   }
 
   if (message.type === 'GET_SETTINGS') {
