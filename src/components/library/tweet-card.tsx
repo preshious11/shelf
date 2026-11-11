@@ -50,7 +50,7 @@ export function TweetCard({
   };
 
   return (
-    <article className="group bg-white dark:bg-[#16161A] border border-[#E5E5E3] dark:border-[#26262B] hover:border-[#D4D4D1] dark:hover:border-[#383840] rounded-xl p-5 transition-colors shadow-[0_1px_3px_rgba(0,0,0,0.03)] flex flex-col justify-between">
+    <article className="group bg-white dark:bg-[#16161A] border border-[#E5E5E3] dark:border-[#26262B] hover:border-[#D4D4D1] dark:hover:border-[#383840] rounded-xl p-4 transition-colors shadow-[0_1px_3px_rgba(0,0,0,0.03)] flex flex-col justify-between h-full">
       <div>
         {/* Header: Author info & Action buttons */}
         <div className="flex items-start justify-between gap-3 mb-3">

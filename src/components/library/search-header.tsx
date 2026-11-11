@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef } from 'react';
-import { Search, X, Image as ImageIcon, MessageSquare, Circle, Pin, ArrowUpDown } from 'lucide-react';
+import { Search, X, Image as ImageIcon, MessageSquare, Circle, Pin, ArrowUpDown, LayoutGrid, List } from 'lucide-react';
 
 export type SortOption = 'saved_desc' | 'saved_asc' | 'posted_desc' | 'posted_asc' | 'author_asc';
 
@@ -18,6 +18,8 @@ interface SearchHeaderProps {
   onTogglePinnedFilter: () => void;
   sortOption: SortOption;
   onSortChange: (sort: SortOption) => void;
+  viewMode: 'grid' | 'list';
+  onViewModeChange: (mode: 'grid' | 'list') => void;
   activeCategoryName?: string | null;
   onClearCategory?: () => void;
   activeTagName?: string | null;
@@ -38,6 +40,8 @@ export function SearchHeader({
   onTogglePinnedFilter,
   sortOption,
   onSortChange,
+  viewMode,
+  onViewModeChange,
   activeCategoryName,
   onClearCategory,
   activeTagName,
@@ -200,10 +204,37 @@ export function SearchHeader({
           </button>
         </div>
 
-        {/* Count summary */}
-        <span className="text-[11px] font-mono text-[#71717A] dark:text-[#A1A1AA]">
-          {totalFiltered} {totalFiltered === 1 ? 'bookmark' : 'bookmarks'}
-        </span>
+        {/* Layout Toggle & Count summary */}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center border border-[#E5E5E3] dark:border-[#26262B] rounded-lg p-0.5 bg-white dark:bg-[#16161A]">
+            <button
+              onClick={() => onViewModeChange('grid')}
+              title="3-column Grid View"
+              className={`p-1 rounded transition-colors ${
+                viewMode === 'grid'
+                  ? 'bg-[#18181B] dark:bg-[#F4F4F5] text-white dark:text-[#18181B]'
+                  : 'text-[#71717A] dark:text-[#A1A1AA] hover:text-[#18181B] dark:hover:text-[#F4F4F5]'
+              }`}
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => onViewModeChange('list')}
+              title="Single Column View"
+              className={`p-1 rounded transition-colors ${
+                viewMode === 'list'
+                  ? 'bg-[#18181B] dark:bg-[#F4F4F5] text-white dark:text-[#18181B]'
+                  : 'text-[#71717A] dark:text-[#A1A1AA] hover:text-[#18181B] dark:hover:text-[#F4F4F5]'
+              }`}
+            >
+              <List className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <span className="text-[11px] font-mono text-[#71717A] dark:text-[#A1A1AA]">
+            {totalFiltered} {totalFiltered === 1 ? 'bookmark' : 'bookmarks'}
+          </span>
+        </div>
       </div>
     </header>
   );

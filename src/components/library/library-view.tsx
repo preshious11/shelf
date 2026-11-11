@@ -47,6 +47,7 @@ export function LibraryView({
   const [unreadFilter, setUnreadFilter] = useState(false);
   const [pinnedFilter, setPinnedFilter] = useState(false);
   const [sortOption, setSortOption] = useState<SortOption>('saved_desc');
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
   // UI Modals & modes
   const [triageMode, setTriageMode] = useState(false);
@@ -701,11 +702,13 @@ export function LibraryView({
               activeTagName={activeTag?.name}
               onClearTag={() => setSelectedTagId(null)}
               totalFiltered={filteredBookmarks.length}
+              viewMode={viewMode}
+              onViewModeChange={setViewMode}
             />
 
             {/* Bookmarks Stream */}
             <main className="flex-1 overflow-y-auto px-6 py-6">
-              <div className="max-w-4xl mx-auto space-y-4">
+              <div className={viewMode === 'grid' ? 'max-w-7xl mx-auto' : 'max-w-3xl mx-auto'}>
                 {bookmarks.length === 0 ? (
                   <EmptyState
                     type="no_bookmarks"
@@ -734,7 +737,13 @@ export function LibraryView({
                     />
                   )
                 ) : (
-                  <div className="space-y-4">
+                  <div
+                    className={
+                      viewMode === 'grid'
+                        ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-start'
+                        : 'space-y-4'
+                    }
+                  >
                     {filteredBookmarks.map((bookmark) => (
                       <TweetCard
                         key={bookmark.id}
