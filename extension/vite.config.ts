@@ -13,6 +13,7 @@ export default defineConfig({
         options: resolve(__dirname, 'options.html'),
         content: resolve(__dirname, 'src/content.ts'),
         background: resolve(__dirname, 'src/background.ts'),
+        bridge: resolve(__dirname, 'src/bridge.ts'),
       },
       output: {
         entryFileNames: (chunkInfo) => {
@@ -21,6 +22,9 @@ export default defineConfig({
           }
           if (chunkInfo.name === 'background') {
             return 'background.js';
+          }
+          if (chunkInfo.name === 'bridge') {
+            return 'bridge.js';
           }
           return '[name].js';
         },

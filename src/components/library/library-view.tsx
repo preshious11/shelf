@@ -83,6 +83,151 @@ export function LibraryView({
     }
   }, []);
 
+  // Refresh bookmarks from database silently and merge changes
+  const refreshBookmarks = useCallback(async () => {
+    if (!userId || userId === 'demo-user') return;
+    try {
+      const { data: latestBookmarks, error } = await supabase
+        .from('bookmarks')
+        .select('*')
+        .eq('user_id', userId)
+        .order('saved_at', { ascending: false });
+
+      if (error) {
+        console.warn('[Library] Failed to refresh bookmarks:', error);
+        return;
+      }
+
+      if (latestBookmarks) {
+        setBookmarks((prev) => {
+          // If counts differ or IDs differ, update immediately
+          if (prev.length !== latestBookmarks.length) {
+            return latestBookmarks as Bookmark[];
+          }
+          const hasChange = latestBookmarks.some((nb, i) => {
+            const ob = prev[i];
+            return (
+              !ob ||
+              ob.id !== nb.id ||
+              ob.category_id !== nb.category_id ||
+              ob.status !== nb.status ||
+              ob.is_read !== nb.is_read ||
+              ob.is_pinned !== nb.is_pinned ||
+              ob.suggested_category_id !== nb.suggested_category_id
+            );
+          });
+          if (hasChange) {
+            return latestBookmarks as Bookmark[];
+          }
+          return prev;
+        });
+      }
+    } catch (err) {
+      console.warn('[Library] Error refreshing bookmarks:', err);
+    }
+  }, [supabase, userId]);
+
+  // Real-time synchronization: Supabase Realtime + Tab Focus + Visibility + Polling Heartbeat
+  useEffect(() => {
+    if (!userId || userId === 'demo-user') return;
+
+    // 1. Supabase Postgres Changes Channel
+    const channel = supabase
+      .channel(`library-realtime-${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'bookmarks',
+          filter: `user_id=eq.${userId}`,
+        },
+        () => {
+          refreshBookmarks();
+        }
+      )
+      .subscribe();
+
+    // 2. Window Focus & Visibility Change:
+    // When the user switches back from X to the Shelf tab, instantly update
+    const handleFocusOrVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        refreshBookmarks();
+      }
+    };
+    window.addEventListener('focus', handleFocusOrVisibility);
+    document.addEventListener('visibilitychange', handleFocusOrVisibility);
+
+    // 3. Cross-Tab BroadcastChannel
+    let broadcastChannel: BroadcastChannel | null = null;
+    try {
+      broadcastChannel = new BroadcastChannel('shelf_sync_channel');
+      broadcastChannel.onmessage = (event) => {
+        if (event.data?.type === 'BOOKMARKS_CHANGED' || event.data?.type === 'SHELF_BOOKMARKS_CHANGED') {
+          refreshBookmarks();
+        }
+      };
+    } catch {
+      // Ignored if unsupported
+    }
+
+    // 4. Window Message Listener (for direct postMessage from extension bridge)
+    const handleWindowMessage = (event: MessageEvent) => {
+      if (event.data && event.data.type === 'SHELF_BOOKMARKS_CHANGED') {
+        refreshBookmarks();
+      }
+    };
+    window.addEventListener('message', handleWindowMessage);
+
+    // 5. Lightweight background polling heartbeat (every 3 seconds when tab is active)
+    let lastBookmarkCount = bookmarks.length;
+    let lastLatestId = bookmarks[0]?.id || '';
+
+    const heartbeatTimer = setInterval(async () => {
+      if (document.hidden) return; // Save resources when tab is backgrounded
+
+      try {
+        const { count, error: countErr } = await supabase
+          .from('bookmarks')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', userId);
+
+        if (!countErr && typeof count === 'number' && count !== lastBookmarkCount) {
+          lastBookmarkCount = count;
+          refreshBookmarks();
+          return;
+        }
+
+        const { data: latest, error: latestErr } = await supabase
+          .from('bookmarks')
+          .select('id')
+          .eq('user_id', userId)
+          .order('saved_at', { ascending: false })
+          .limit(1);
+
+        if (!latestErr && latest && latest.length > 0) {
+          if (latest[0].id !== lastLatestId) {
+            lastLatestId = latest[0].id;
+            refreshBookmarks();
+          }
+        }
+      } catch {
+        // Silent catch for background heartbeat
+      }
+    }, 3000);
+
+    return () => {
+      supabase.removeChannel(channel);
+      window.removeEventListener('focus', handleFocusOrVisibility);
+      document.removeEventListener('visibilitychange', handleFocusOrVisibility);
+      window.removeEventListener('message', handleWindowMessage);
+      if (broadcastChannel) {
+        broadcastChannel.close();
+      }
+      clearInterval(heartbeatTimer);
+    };
+  }, [userId, supabase, refreshBookmarks, bookmarks]);
+
   // Global keyboard shortcuts (Cmd+K for palette, T for triage)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

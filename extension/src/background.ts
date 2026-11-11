@@ -82,7 +82,31 @@ async function deleteBookmarkFromShelf(tweetId: string): Promise<{ success: bool
     throw new Error(`Delete failed: ${msg}`);
   }
 
-  return await response.json();
+  const data = await response.json();
+  notifyShelfTabs();
+  return data;
+}
+
+// Notify all open Shelf web tabs that bookmarks changed
+async function notifyShelfTabs() {
+  try {
+    const tabs = await chrome.tabs.query({});
+    for (const tab of tabs) {
+      const url = (tab.url || '').toLowerCase();
+      if (
+        url.includes('shelf-drab-kappa.vercel.app') ||
+        url.includes('localhost:3005') ||
+        url.includes('localhost:3000') ||
+        url.includes('127.0.0.1')
+      ) {
+        if (tab.id) {
+          chrome.tabs.sendMessage(tab.id, { type: 'SHELF_BOOKMARKS_CHANGED' }).catch(() => {});
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Shelf Background] Could not notify web tabs:', err);
+  }
 }
 
 // Ingest batch to Shelf web app
@@ -116,7 +140,9 @@ async function sendBatchToShelf(batch: unknown[]): Promise<{ added: number; skip
     throw new Error(`Ingest failed: ${msg}`);
   }
 
-  return await response.json();
+  const data = await response.json();
+  notifyShelfTabs();
+  return data;
 }
 
 // Listen for messages from content scripts or popup

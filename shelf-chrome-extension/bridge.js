@@ -1,0 +1,1 @@
+chrome.runtime.onMessage.addListener(e=>{if(e&&e.type==="SHELF_BOOKMARKS_CHANGED"){window.postMessage({type:"SHELF_BOOKMARKS_CHANGED"},"*");try{const s=new BroadcastChannel("shelf_sync_channel");s.postMessage({type:"BOOKMARKS_CHANGED"}),s.close()}catch{}}});
