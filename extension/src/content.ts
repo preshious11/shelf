@@ -535,6 +535,109 @@ function checkAutoSync() {
   }
 }
 
+// Show temporary notification when a bookmark is auto-removed from Shelf
+function showRemovalNotice(tweetId: string) {
+  const notice = document.createElement('div');
+  notice.style.cssText = `
+    position: fixed !important;
+    bottom: 84px !important;
+    right: 32px !important;
+    z-index: 2147483647 !important;
+    background: #18181B !important;
+    color: #F4F4F5 !important;
+    padding: 8px 16px !important;
+    border-radius: 9999px !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    border: 1px solid #71717A !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3) !important;
+    pointer-events: none !important;
+    transition: opacity 0.3s ease !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+  `;
+  notice.textContent = '✕ Removed from Shelf library';
+  document.body.appendChild(notice);
+  setTimeout(() => {
+    notice.style.opacity = '0';
+    setTimeout(() => notice.remove(), 400);
+  }, 3000);
+}
+
+// Global real-time listener for bookmark removal actions on X
+let lastInteractedTweetId = '';
+
+document.addEventListener(
+  'click',
+  (e) => {
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+
+    // Track last interacted tweet container to handle portal dropdown menus
+    const tweetEl = target.closest('article, [data-testid="tweet"]');
+    if (tweetEl) {
+      const timeLink = tweetEl.querySelector('time')?.closest('a');
+      const statusLink = timeLink || tweetEl.querySelector('a[href*="/status/"]');
+      const href = statusLink?.getAttribute('href') || '';
+      const match = href.match(/\/status\/(\d+)/);
+      if (match) {
+        lastInteractedTweetId = match[1];
+      }
+    }
+
+    // Check if clicked element or parent is an un-bookmark trigger
+    const removeTrigger = target.closest(
+      '[data-testid="removeBookmark"], ' +
+      '[aria-label*="Remove"][aria-label*="ookmark"], ' +
+      '[aria-label*="remove"][aria-label*="ookmark"], ' +
+      '[data-testid="bookmark"][aria-label*="Remove"], ' +
+      '[data-testid="bookmark"][aria-label*="remove"]'
+    );
+
+    // Check for dropdown menu item (e.g. from Share or More menu)
+    const menuItem = target.closest('[role="menuitem"], [data-testid="Dropdown"]');
+    const isMenuRemove = menuItem && /remove.*bookmark|delete.*bookmark/i.test(menuItem.textContent || '');
+
+    if (removeTrigger || isMenuRemove) {
+      let tweetId = '';
+
+      // Try finding tweet element from closest ancestor
+      const container = (removeTrigger || menuItem)?.closest(
+        'article, [data-testid="tweet"], [data-testid="cellInnerDiv"], div[role="article"]'
+      );
+      if (container) {
+        const timeLink = container.querySelector('time')?.closest('a');
+        const statusLink = timeLink || container.querySelector('a[href*="/status/"]');
+        const href = statusLink?.getAttribute('href') || '';
+        const match = href.match(/\/status\/(\d+)/);
+        if (match) {
+          tweetId = match[1];
+        }
+      }
+
+      if (!tweetId) {
+        tweetId = lastInteractedTweetId;
+      }
+
+      if (tweetId) {
+        console.log('[Shelf] Un-bookmark action detected on X for tweet:', tweetId);
+        chrome.runtime.sendMessage(
+          {
+            type: 'DELETE_BOOKMARK',
+            tweetId,
+          },
+          (response) => {
+            if (response && response.success) {
+              console.log('[Shelf] Bookmark auto-removed from Shelf library:', tweetId);
+              showRemovalNotice(tweetId);
+            }
+          }
+        );
+      }
+    }
+  },
+  true // Use capture phase to inspect DOM before Twitter mutates/unmounts
+);
+
 // Listen for START_CAPTURE message from popup or shortcuts
 chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   if (req.action === 'START_CAPTURE') {

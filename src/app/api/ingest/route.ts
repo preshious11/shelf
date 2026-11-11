@@ -99,6 +99,60 @@ export async function GET(request: NextRequest) {
   }
 }
 
+// DELETE /api/ingest: Auto-remove bookmark from Shelf when unbookmarked on X
+export async function DELETE(request: NextRequest) {
+  try {
+    const auth = await verifyApiToken(request);
+    if ('error' in auth) {
+      return NextResponse.json({ error: auth.error }, { status: auth.status });
+    }
+
+    const { userId, supabase } = auth;
+
+    // Check tweet_id from query params or request body
+    const { searchParams } = new URL(request.url);
+    let tweetId = searchParams.get('tweet_id') || searchParams.get('id');
+
+    if (!tweetId) {
+      try {
+        const body = await request.json();
+        tweetId = body?.tweet_id || body?.id;
+      } catch {
+        // Body may not be JSON
+      }
+    }
+
+    if (!tweetId) {
+      return NextResponse.json(
+        { error: 'Missing tweet_id parameter' },
+        { status: 400 }
+      );
+    }
+
+    const { error, count } = await supabase
+      .from('bookmarks')
+      .delete({ count: 'exact' })
+      .eq('user_id', userId)
+      .eq('tweet_id', String(tweetId).trim());
+
+    if (error) {
+      console.error('[Ingest DELETE] Failed to delete bookmark:', error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    console.log(`[Ingest DELETE] Removed tweet ${tweetId} from Shelf (rows affected: ${count})`);
+    return NextResponse.json({
+      success: true,
+      deleted_tweet_id: String(tweetId),
+      count: count || 0,
+    });
+  } catch (err: unknown) {
+    console.error('[Ingest DELETE] Unexpected error:', err);
+    const msg = err instanceof Error ? err.message : 'Internal Server Error';
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
+}
+
 // POST /api/ingest: Ingest batch of new bookmarks
 export async function POST(request: NextRequest) {
   try {

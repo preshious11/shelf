@@ -45,6 +45,38 @@ async function fetchKnownBookmarkIds(): Promise<{ success: boolean; knownIds?: s
   }
 }
 
+// Delete a bookmark from Shelf web app
+async function deleteBookmarkFromShelf(tweetId: string): Promise<{ success: boolean; deleted_tweet_id?: string; error?: string }> {
+  const { appUrl, apiToken } = await getStoredSettings();
+
+  if (!apiToken) {
+    throw new Error('API Token not configured in extension options.');
+  }
+
+  const endpoint = `${appUrl.replace(/\/$/, '')}/api/ingest?tweet_id=${encodeURIComponent(tweetId)}`;
+
+  const response = await fetch(endpoint, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${apiToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    let msg = `HTTP ${response.status}`;
+    try {
+      const parsed = JSON.parse(errorText);
+      msg = parsed.error || msg;
+    } catch {
+      msg = errorText || msg;
+    }
+    throw new Error(`Delete failed: ${msg}`);
+  }
+
+  return await response.json();
+}
+
 // Ingest batch to Shelf web app
 async function sendBatchToShelf(batch: unknown[]): Promise<{ added: number; skipped: number }> {
   const { appUrl, apiToken } = await getStoredSettings();
@@ -92,6 +124,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: false, error: errorMsg });
       });
     return true; // Keep message channel open for async response
+  }
+
+  if (message.type === 'DELETE_BOOKMARK') {
+    deleteBookmarkFromShelf(message.tweetId)
+      .then((result) => {
+        sendResponse(result);
+      })
+      .catch((err: unknown) => {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to delete bookmark';
+        console.error('[Shelf Background] Delete error:', errorMsg);
+        sendResponse({ success: false, error: errorMsg });
+      });
+    return true;
   }
 
   if (message.type === 'GET_KNOWN_IDS') {
