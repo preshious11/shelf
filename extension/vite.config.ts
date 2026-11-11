@@ -1,0 +1,44 @@
+import { defineConfig } from 'vite';
+import { resolve } from 'path';
+import fs from 'fs';
+
+export default defineConfig({
+  root: resolve(__dirname),
+  build: {
+    outDir: resolve(__dirname, 'dist'),
+    emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        popup: resolve(__dirname, 'popup.html'),
+        options: resolve(__dirname, 'options.html'),
+        content: resolve(__dirname, 'src/content.ts'),
+        background: resolve(__dirname, 'src/background.ts'),
+      },
+      output: {
+        entryFileNames: (chunkInfo) => {
+          if (chunkInfo.name === 'content') {
+            return 'content.js';
+          }
+          if (chunkInfo.name === 'background') {
+            return 'background.js';
+          }
+          return '[name].js';
+        },
+        chunkFileNames: 'chunks/[name]-[hash].js',
+        assetFileNames: '[name].[ext]',
+      },
+    },
+  },
+  plugins: [
+    {
+      name: 'copy-manifest',
+      closeBundle() {
+        const manifestSrc = resolve(__dirname, 'manifest.json');
+        const manifestDist = resolve(__dirname, 'dist/manifest.json');
+        if (fs.existsSync(manifestSrc)) {
+          fs.copyFileSync(manifestSrc, manifestDist);
+        }
+      },
+    },
+  ],
+});

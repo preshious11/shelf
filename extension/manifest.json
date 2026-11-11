@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Shelf — X Bookmarks Sync",
+  "version": "1.0.0",
+  "description": "Capture your X (Twitter) bookmarks quietly and sync them to your Shelf library.",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": [
+    "https://x.com/*",
+    "https://twitter.com/*",
+    "*://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Shelf Sync"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://x.com/i/bookmarks*",
+        "https://twitter.com/i/bookmarks*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
