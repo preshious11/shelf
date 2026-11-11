@@ -90,23 +90,31 @@ function findTweetElements(doc: Document): Element[] {
 
 // Create and inject the floating widget
 function createFloatingWidget() {
-  if (document.getElementById('shelf-floating-widget')) return;
+  if (!document.body) return;
+
+  const existing = document.getElementById('shelf-floating-widget');
+  if (existing && document.body.contains(existing)) return;
+  if (existing) existing.remove();
 
   const container = document.createElement('div');
   container.id = 'shelf-floating-widget';
   container.style.cssText = `
-    position: fixed;
-    bottom: 32px;
-    right: 32px;
-    z-index: 2147483647;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    user-select: none;
+    position: fixed !important;
+    bottom: 32px !important;
+    right: 32px !important;
+    z-index: 2147483647 !important;
+    display: block !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+    user-select: none !important;
   `;
 
   renderWidgetContent(container, 'idle');
   document.body.appendChild(container);
   floatingWidget = container;
-  console.log('[Shelf] Floating capture widget injected successfully.');
+  console.log('[Shelf] Floating widget anchored to document.body');
 }
 
 function renderWidgetContent(
@@ -114,6 +122,8 @@ function renderWidgetContent(
   state: 'idle' | 'capturing' | 'done' | 'error',
   info?: { count?: number; message?: string }
 ) {
+  const isBookmarks = window.location.href.includes('bookmarks');
+
   if (state === 'idle') {
     container.innerHTML = `
       <div style="
@@ -122,24 +132,30 @@ function renderWidgetContent(
         gap: 8px;
         background: #18181B;
         color: #F4F4F5;
-        padding: 9px 16px;
+        padding: 10px 18px;
         border-radius: 9999px;
-        box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+        box-shadow: 0 4px 20px rgba(0,0,0,0.35);
         cursor: pointer;
         font-size: 13px;
-        font-weight: 500;
+        font-weight: 600;
         border: 1px solid #38BDF8;
         transition: transform 0.15s ease, background 0.15s ease;
       " id="shelf-btn-start">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#38BDF8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#38BDF8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
         </svg>
-        <span>Save to Shelf</span>
+        <span id="shelf-btn-label">${isBookmarks ? 'Save to Shelf' : 'Open Bookmarks'}</span>
       </div>
     `;
 
     const startBtn = container.querySelector('#shelf-btn-start');
-    startBtn?.addEventListener('click', startCapture);
+    startBtn?.addEventListener('click', () => {
+      if (window.location.href.includes('bookmarks')) {
+        startCapture();
+      } else {
+        window.location.href = 'https://x.com/i/bookmarks';
+      }
+    });
   } else if (state === 'capturing') {
     container.innerHTML = `
       <div style="
@@ -148,19 +164,19 @@ function renderWidgetContent(
         gap: 12px;
         background: #18181B;
         color: #F4F4F5;
-        padding: 9px 16px;
+        padding: 10px 18px;
         border-radius: 9999px;
-        box-shadow: 0 4px 18px rgba(0,0,0,0.35);
+        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
         font-size: 13px;
         font-weight: 500;
         border: 1px solid #0284C7;
       ">
         <div style="
-          width: 8px;
-          height: 8px;
+          width: 9px;
+          height: 9px;
           border-radius: 50%;
           background: #38BDF8;
-          box-shadow: 0 0 8px #38BDF8;
+          box-shadow: 0 0 10px #38BDF8;
           animation: pulse 1.5s infinite;
         "></div>
         <span>Saving bookmarks: <strong>${info?.count || 0}</strong></span>
@@ -189,9 +205,9 @@ function renderWidgetContent(
         gap: 8px;
         background: #064E3B;
         color: #ECFDF5;
-        padding: 9px 16px;
+        padding: 10px 18px;
         border-radius: 9999px;
-        box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+        box-shadow: 0 4px 16px rgba(0,0,0,0.25);
         font-size: 13px;
         font-weight: 500;
         border: 1px solid #059669;
@@ -210,9 +226,9 @@ function renderWidgetContent(
         gap: 8px;
         background: #7F1D1D;
         color: #FEF2F2;
-        padding: 9px 16px;
+        padding: 10px 18px;
         border-radius: 9999px;
-        box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+        box-shadow: 0 4px 16px rgba(0,0,0,0.25);
         font-size: 12px;
         font-weight: 500;
         border: 1px solid #DC2626;
@@ -240,12 +256,11 @@ async function startCapture() {
 
   const seenIds = new Set<string>();
   let noNewTweetsRounds = 0;
-  let consecutiveFullSkippedBatches = 0;
 
-  console.log('[Shelf] Starting capture on:', window.location.href);
+  console.log('[Shelf] Starting continuous capture on:', window.location.href);
 
   try {
-    while (!shouldStop && noNewTweetsRounds < 6) {
+    while (!shouldStop && noNewTweetsRounds < 15) {
       // 1. Find all candidate tweet elements in DOM
       const tweetElements = findTweetElements(document);
       console.log(`[Shelf] Scan found ${tweetElements.length} candidate elements in DOM`);
@@ -273,34 +288,34 @@ async function startCapture() {
       if (batchToProcess.length > 0) {
         noNewTweetsRounds = 0;
         console.log(`[Shelf] Sending batch of ${batchToProcess.length} bookmarks to Shelf...`);
-        const res = await sendBatchViaBackground(batchToProcess);
-        console.log('[Shelf] Batch ingest response:', res);
-
-        // Incremental check: only stop if 2 entire batches in a row contain 0 added and all skipped
-        if (res.added === 0 && res.skipped > 0) {
-          consecutiveFullSkippedBatches++;
-          if (consecutiveFullSkippedBatches >= 2) {
-            console.log('[Shelf] Caught up to previously saved bookmarks.');
-            break;
-          }
-        } else {
-          consecutiveFullSkippedBatches = 0;
+        try {
+          const res = await sendBatchViaBackground(batchToProcess);
+          console.log('[Shelf] Ingest response:', res);
+        } catch (sendErr) {
+          console.error('[Shelf] Send error:', sendErr);
         }
       } else {
         noNewTweetsRounds++;
-        console.log(`[Shelf] No new tweets in this pass (round ${noNewTweetsRounds}/6)`);
+        console.log(`[Shelf] No new tweets in this pass (round ${noNewTweetsRounds}/15)`);
       }
 
       if (shouldStop) break;
 
       // Scroll smoothly down the page to trigger virtualized timeline loading
       window.scrollBy({
-        top: window.innerHeight * 0.85,
+        top: window.innerHeight * 0.9,
         behavior: 'smooth',
       });
 
+      // Micro-bounce if waiting for Twitter GraphQL request
+      if (noNewTweetsRounds >= 2) {
+        window.scrollBy({ top: -120, behavior: 'auto' });
+        await randomDelay(300, 500);
+        window.scrollBy({ top: 500, behavior: 'smooth' });
+      }
+
       // Human-like randomized delay
-      await randomDelay(1200, 2400);
+      await randomDelay(1200, 2200);
     }
 
     // Save sync info to chrome.storage
@@ -311,7 +326,7 @@ async function startCapture() {
 
     let finishMessage = '';
     if (capturedCount === 0) {
-      finishMessage = 'No bookmarks detected on this page';
+      finishMessage = 'No bookmarks detected';
     } else {
       finishMessage = `Saved ${capturedCount} bookmarks to Shelf`;
     }
@@ -331,15 +346,21 @@ async function startCapture() {
   }
 }
 
-// Initialize on x.com bookmarks page
-function checkAndInit() {
-  const isBookmarksPage =
-    window.location.href.includes('/bookmarks') ||
-    window.location.pathname.includes('/bookmarks') ||
-    window.location.pathname.includes('/i/bookmarks');
+// Continuously ensure floating widget stays anchored in DOM
+function ensureWidget() {
+  if (!document.body) return;
 
-  if (isBookmarksPage) {
+  const existing = document.getElementById('shelf-floating-widget');
+  const isAttached = existing && document.body.contains(existing);
+
+  if (!isAttached) {
     createFloatingWidget();
+  } else if (existing && !isCapturing) {
+    const isBookmarks = window.location.href.includes('bookmarks');
+    const label = existing.querySelector('#shelf-btn-label');
+    if (label && label.textContent !== (isBookmarks ? 'Save to Shelf' : 'Open Bookmarks')) {
+      label.textContent = isBookmarks ? 'Save to Shelf' : 'Open Bookmarks';
+    }
   }
 }
 
@@ -351,8 +372,8 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   }
 });
 
-// Periodic check to catch single-page client side navigation
-setInterval(checkAndInit, 1000);
+// Watchdog interval to make sure pill never disappears
+setInterval(ensureWidget, 600);
 
 // Observe URL changes (single-page application navigation on X)
 let lastUrl = location.href;
@@ -360,8 +381,8 @@ new MutationObserver(() => {
   const url = location.href;
   if (url !== lastUrl) {
     lastUrl = url;
-    checkAndInit();
+    ensureWidget();
   }
 }).observe(document, { subtree: true, childList: true });
 
-checkAndInit();
+ensureWidget();
