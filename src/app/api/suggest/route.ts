@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
 
     let { data: bookmarksData, error: bookError } = await bookmarksQuery
       .eq('status', 'to_sort')
-      .limit(25);
+      .limit(15);
 
     // Fallback: if no 'to_sort' bookmarks found, look for bookmarks without an assigned category
     if (!bookmarksData || bookmarksData.length === 0) {
@@ -81,7 +81,7 @@ export async function POST(request: NextRequest) {
         unassignedQuery = unassignedQuery.is('suggested_category_id', null);
       }
 
-      const { data: unassignedData } = await unassignedQuery.limit(25);
+      const { data: unassignedData } = await unassignedQuery.limit(15);
       if (unassignedData && unassignedData.length > 0) {
         bookmarksData = unassignedData;
       }
@@ -132,47 +132,75 @@ Rules:
   }
 ]`;
 
-    // 4. Initialize Gemini with resilient fallback
+    // 4. Initialize Gemini with resilient multi-model fallback and retry
     const genAI = new GoogleGenerativeAI(apiKey);
     const candidateModels = [
+      'gemini-3.5-flash',
+      'gemini-3.6-flash',
       process.env.GEMINI_MODEL || 'gemini-3.5-flash',
       'gemini-3.5-flash-lite',
-      'gemini-2.5-flash',
       'gemini-3.8-flash',
-    ];
+    ].filter((m, i, arr) => arr.indexOf(m) === i); // deduplicate
 
     let result: any = null;
     let usedModel = '';
     let lastError: any = null;
 
     for (const modelCandidate of candidateModels) {
-      try {
-        const model = genAI.getGenerativeModel({
-          model: modelCandidate,
-          generationConfig: {
-            responseMimeType: 'application/json',
-            temperature: 0.2,
-          },
-        });
+      // Try up to 2 attempts per candidate model if a temporary 503/429 spike occurs
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const model = genAI.getGenerativeModel({
+            model: modelCandidate,
+            generationConfig: {
+              responseMimeType: 'application/json',
+              temperature: 0.2,
+            },
+          });
 
-        result = await model.generateContent([
-          systemPrompt,
-          `Categorize these tweets:\n${JSON.stringify(tweetList, null, 2)}`,
-        ]);
-        usedModel = modelCandidate;
+          result = await model.generateContent([
+            systemPrompt,
+            `Categorize these tweets:\n${JSON.stringify(tweetList, null, 2)}`,
+          ]);
+          usedModel = modelCandidate;
+          break;
+        } catch (err: any) {
+          lastError = err;
+          const msg = String(err?.message || '');
+          const isTemporary =
+            err?.status === 503 ||
+            err?.status === 429 ||
+            msg.includes('503') ||
+            msg.includes('429') ||
+            msg.includes('high demand') ||
+            msg.includes('ResourceExhausted');
+
+          console.warn(`[Suggest] Model ${modelCandidate} attempt ${attempt + 1} failed: ${msg}`);
+
+          if (isTemporary && attempt === 0) {
+            // Short backoff before retry
+            await new Promise((resolve) => setTimeout(resolve, 1200));
+            continue;
+          }
+          break; // Advance to next candidate model
+        }
+      }
+
+      if (result) {
         break;
-      } catch (err: any) {
-        console.warn(`[Suggest] Gemini model ${modelCandidate} failed (${err?.status || err?.message}). Trying fallback...`);
-        lastError = err;
       }
     }
 
     if (!result) {
       console.error('[Suggest] All Gemini candidate models failed:', lastError);
+      let errorMsg = lastError?.message || 'Gemini API call failed';
+      if (errorMsg.includes('503') || errorMsg.includes('high demand')) {
+        errorMsg = 'Google AI is currently experiencing high demand. Please try again in a few seconds.';
+      }
       return NextResponse.json({
         updated: 0,
         error: 'Suggestions unavailable right now',
-        message: lastError?.message || 'Gemini API call failed',
+        message: errorMsg,
       });
     }
 
