@@ -361,12 +361,14 @@ export function LibraryView({
     try {
       const res = await fetch('/api/suggest', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force: true }),
       });
       const data = await res.json();
       if (data.error) {
-        setSuggestionNotice('Suggestions unavailable right now');
+        setSuggestionNotice('Suggestions unavailable: ' + (data.message || data.error));
       } else if (data.updated > 0) {
-        setSuggestionNotice(null);
+        setSuggestionNotice(`Generated ${data.updated} AI category suggestion${data.updated > 1 ? 's' : ''}`);
         // Refresh bookmarks to reflect new suggestions
         const { data: updatedBookmarks } = await supabase
           .from('bookmarks')
@@ -376,6 +378,8 @@ export function LibraryView({
         if (updatedBookmarks) {
           setBookmarks(updatedBookmarks as Bookmark[]);
         }
+      } else {
+        setSuggestionNotice(data.message || 'All bookmarks already have suggestions');
       }
     } catch (err) {
       console.error('Error getting AI suggestions:', err);
@@ -639,7 +643,15 @@ export function LibraryView({
                 To sort triage queue ({toSortBookmarks.length} remaining)
               </span>
             </div>
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleTriggerSuggestions}
+                disabled={isSuggesting}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium border border-sky-300 dark:border-sky-800 bg-white dark:bg-[#16161A] text-sky-800 dark:text-sky-200 hover:bg-sky-100 dark:hover:bg-sky-900/50 transition-colors disabled:opacity-50"
+              >
+                <Sparkles className="w-3 h-3 text-sky-500" />
+                <span>{isSuggesting ? 'AI Thinking...' : 'AI Suggest Categories'}</span>
+              </button>
               <button
                 onClick={() => setTriageMode(true)}
                 className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${

@@ -14,6 +14,7 @@ import {
   Folder,
   Tag as TagIcon,
   ChevronDown,
+  Sparkles,
 } from 'lucide-react';
 
 interface TweetCardProps {
@@ -43,6 +44,7 @@ export function TweetCard({
   const [avatarError, setAvatarError] = useState(false);
 
   const currentCategory = categories.find((c) => c.id === bookmark.category_id);
+  const suggestedCategory = categories.find((c) => c.id === bookmark.suggested_category_id);
 
   const handleSaveNote = () => {
     onUpdateNote(bookmark.id, noteText.trim());
@@ -299,6 +301,30 @@ export function TweetCard({
               </>
             )}
           </div>
+
+          {/* AI Category Suggestion Pill */}
+          {suggestedCategory && bookmark.suggested_category_id !== bookmark.category_id && (
+            <div
+              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800/60 text-[11px] text-sky-700 dark:text-sky-300 transition-colors"
+              title={bookmark.suggestion_reason || 'AI recommendation'}
+            >
+              <Sparkles className="w-2.5 h-2.5 text-sky-500" />
+              <span className="truncate max-w-[120px]">
+                AI: <strong>{suggestedCategory.name}</strong>
+              </span>
+              {typeof bookmark.suggestion_confidence === 'number' && (
+                <span className="text-[10px] opacity-75">
+                  {Math.round(bookmark.suggestion_confidence * 100)}%
+                </span>
+              )}
+              <button
+                onClick={() => onUpdateCategory(bookmark.id, suggestedCategory.id)}
+                className="ml-0.5 font-semibold text-sky-600 dark:text-sky-400 hover:text-sky-800 dark:hover:text-sky-200 hover:underline"
+              >
+                Accept
+              </button>
+            </div>
+          )}
 
           {/* Tags */}
           {Array.isArray(bookmark.tags) &&
