@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Shelf</title>
+  <style>
+    :root {
+      --bg: #FBFBFA;
+      --card-bg: #FFFFFF;
+      --border: #E5E5E3;
+      --text-main: #18181B;
+      --text-muted: #71717A;
+      --accent: #0284C7;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0C0C0E;
+        --card-bg: #16161A;
+        --border: #26262B;
+        --text-main: #F4F4F5;
+        --text-muted: #A1A1AA;
+        --accent: #38BDF8;
+      }
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      width: 280px;
+      background-color: var(--bg);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding: 16px;
+      -webkit-font-smoothing: antialiased;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      background: var(--text-main);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .brand-name {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      font-size: 12px;
+    }
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 0;
+    }
+    .stat-label {
+      color: var(--text-muted);
+    }
+    .stat-val {
+      font-weight: 500;
+      font-family: monospace;
+    }
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    button, a.btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      width: 100%;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: 8px;
+      text-decoration: none;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.15s ease;
+    }
+    .btn-primary {
+      background: var(--text-main);
+      color: var(--bg);
+      border-color: var(--text-main);
+    }
+    .btn-primary:hover {
+      opacity: 0.9;
+    }
+    .btn-secondary {
+      background: transparent;
+      color: var(--text-main);
+      border-color: var(--border);
+    }
+    .btn-secondary:hover {
+      background: rgba(0,0,0,0.04);
+    }
+  </style>
+  <script type="module" crossorigin src="/popup.js"></script>
+  <link rel="modulepreload" crossorigin href="/chunks/modulepreload-polyfill-B5Qt9EMX.js">
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      <div class="icon">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#38BDF8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
+        </svg>
+      </div>
+      <span class="brand-name">Shelf</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="stat-row">
+      <span class="stat-label">Last sync</span>
+      <span class="stat-val" id="last-sync-time">Never</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Bookmarks captured</span>
+      <span class="stat-val" id="last-sync-count">0</span>
+    </div>
+  </div>
+
+  <div class="actions">
+    <a href="#" class="btn btn-primary" id="open-library-btn">Open Library</a>
+    <a href="#" class="btn btn-secondary" id="open-bookmarks-btn">Go to X Bookmarks</a>
+    <a href="#" class="btn btn-secondary" id="open-options-btn">Options</a>
+  </div>
+
+</body>
+</html>
+
