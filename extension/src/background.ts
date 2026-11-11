@@ -34,7 +34,15 @@ async function fetchKnownBookmarkIds(): Promise<{ success: boolean; knownIds?: s
     });
 
     if (!response.ok) {
-      return { success: false, error: `HTTP ${response.status}` };
+      let errorMsg = `HTTP ${response.status}`;
+      try {
+        const errorText = await response.text();
+        const parsed = JSON.parse(errorText);
+        errorMsg = parsed.error || errorMsg;
+      } catch {
+        // Keep fallback
+      }
+      return { success: false, error: errorMsg };
     }
 
     const data = await response.json();

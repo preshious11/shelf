@@ -29,15 +29,23 @@ function isBookmarksOrHistoryPage(): boolean {
 }
 
 // Fetch existing tweet IDs already saved in Shelf
-async function fetchKnownIdsViaBackground(): Promise<Set<string>> {
+async function fetchKnownIdsViaBackground(): Promise<{ success: boolean; ids: Set<string>; error?: string }> {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage({ type: 'GET_KNOWN_IDS' }, (res) => {
-      if (chrome.runtime.lastError || !res || !res.success || !Array.isArray(res.knownIds)) {
-        console.warn('[Shelf] Could not fetch known IDs from background, starting fresh');
-        resolve(new Set());
+      if (chrome.runtime.lastError) {
+        resolve({ success: false, ids: new Set(), error: chrome.runtime.lastError.message });
         return;
       }
-      resolve(new Set(res.knownIds.map((id: any) => String(id))));
+      if (!res || !res.success) {
+        resolve({
+          success: false,
+          ids: new Set(),
+          error: res?.error || 'Failed to connect to Shelf web app',
+        });
+        return;
+      }
+      const ids = new Set<string>((res.knownIds || []).map((id: any) => String(id)));
+      resolve({ success: true, ids });
     });
   });
 }
@@ -364,7 +372,28 @@ async function startCapture() {
   }
 
   console.log('[Shelf] Fetching known bookmark IDs from Shelf library...');
-  const knownInShelf = await fetchKnownIdsViaBackground();
+  const knownCheck = await fetchKnownIdsViaBackground();
+  if (!knownCheck.success && knownCheck.error) {
+    console.error('[Shelf] Pre-flight connection failed:', knownCheck.error);
+    let userMsg = knownCheck.error;
+    if (userMsg.includes('API Token not configured')) {
+      userMsg = 'API Token missing. Click extension icon > Options.';
+    } else if (userMsg.includes('401') || userMsg.includes('Invalid or revoked')) {
+      userMsg = 'Invalid API Token. Update in Extension Options.';
+    } else if (userMsg.includes('Database error') || userMsg.includes('SERVICE_ROLE_KEY')) {
+      userMsg = 'Server config error. Check Vercel environment keys.';
+    } else if (userMsg.length > 50) {
+      userMsg = userMsg.slice(0, 47) + '...';
+    }
+
+    if (floatingWidget) {
+      renderWidgetContent(floatingWidget, 'error', { message: userMsg });
+    }
+    isCapturing = false;
+    return;
+  }
+
+  const knownInShelf = knownCheck.ids;
   console.log(`[Shelf] Library currently contains ${knownInShelf.size} bookmarks.`);
 
   const seenInSession = new Set<string>();
@@ -423,7 +452,6 @@ async function startCapture() {
         if (!seenInSession.has(tweet.tweet_id)) {
           seenInSession.add(tweet.tweet_id);
           batchToProcess.push(tweet);
-          newlySavedCount++;
           discoveredThisPass++;
           console.log(`[Shelf] Found new bookmark: ${tweet.tweet_id} by @${tweet.author_handle}`);
         }
@@ -432,7 +460,7 @@ async function startCapture() {
       // Update widget count in real-time
       if (floatingWidget) {
         renderWidgetContent(floatingWidget, 'capturing', {
-          newCount: newlySavedCount,
+          newCount: newlySavedCount + batchToProcess.length,
           existingCount: alreadySavedCount,
         });
       }
@@ -444,10 +472,25 @@ async function startCapture() {
         try {
           const res = await sendBatchViaBackground(batchToProcess);
           console.log('[Shelf] Ingest response:', res);
+          const savedCount = typeof res.added === 'number' ? res.added : batchToProcess.length;
+          newlySavedCount += savedCount;
           // Mark as known in Shelf
           batchToProcess.forEach((t) => knownInShelf.add(t.tweet_id));
-        } catch (sendErr) {
+        } catch (sendErr: unknown) {
           console.error('[Shelf] Send error:', sendErr);
+          const errText = sendErr instanceof Error ? sendErr.message : 'Ingest failed';
+          let displayMsg = errText;
+          if (displayMsg.includes('401') || displayMsg.includes('Unauthorized') || displayMsg.includes('token')) {
+            displayMsg = 'Auth failed (401). Check API token in Options.';
+          } else if (displayMsg.includes('Database error') || displayMsg.includes('SERVICE_ROLE_KEY')) {
+            displayMsg = 'Server DB error. Check Vercel environment keys.';
+          } else if (displayMsg.length > 50) {
+            displayMsg = displayMsg.slice(0, 47) + '...';
+          }
+          if (floatingWidget) {
+            renderWidgetContent(floatingWidget, 'error', { message: displayMsg });
+          }
+          break; // Stop scrolling if sending failed
         }
       } else if (discoveredThisPass > 0) {
         // Discovered existing tweets, which means we are progressing through the feed!
