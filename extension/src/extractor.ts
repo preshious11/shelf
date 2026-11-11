@@ -24,19 +24,34 @@ export interface ExtractedTweet {
 
 export function extractTweetFromElement(tweetEl: Element): ExtractedTweet | null {
   try {
-    // 1. Extract status link and tweet ID
-    // Find all links matching /status/ and pick the one with a numeric ID
-    const statusLinks = querySelectorAllFirst<HTMLAnchorElement>(tweetEl, SELECTORS.statusLink);
     let tweetId = '';
     let tweetUrl = '';
 
-    for (const link of statusLinks) {
-      const href = link.getAttribute('href') || '';
-      const match = href.match(/\/status\/(\d+)/);
-      if (match && match[1]) {
-        tweetId = match[1];
-        tweetUrl = href.startsWith('http') ? href : `https://x.com${href}`;
-        break;
+    // Primary: Find status link via time tag's parent anchor
+    const timeEl = querySelectorFirst(tweetEl, SELECTORS.timeTag);
+    if (timeEl) {
+      const parentLink = timeEl.closest('a');
+      if (parentLink) {
+        const href = parentLink.getAttribute('href') || '';
+        const match = href.match(/\/status\/(\d+)/);
+        if (match && match[1]) {
+          tweetId = match[1];
+          tweetUrl = href.startsWith('http') ? href : `https://x.com${href}`;
+        }
+      }
+    }
+
+    // Fallback: search all links in the tweet container
+    if (!tweetId) {
+      const statusLinks = querySelectorAllFirst<HTMLAnchorElement>(tweetEl, SELECTORS.statusLink);
+      for (const link of statusLinks) {
+        const href = link.getAttribute('href') || '';
+        const match = href.match(/\/status\/(\d+)/);
+        if (match && match[1]) {
+          tweetId = match[1];
+          tweetUrl = href.startsWith('http') ? href : `https://x.com${href}`;
+          break;
+        }
       }
     }
 
@@ -81,9 +96,9 @@ export function extractTweetFromElement(tweetEl: Element): ExtractedTweet | null
 
     // 5. Extract posted_at timestamp
     let postedAt: string | null = null;
-    const timeEl = querySelectorFirst(tweetEl, SELECTORS.timeTag);
-    if (timeEl) {
-      const dt = timeEl.getAttribute('datetime');
+    const postedTimeEl = querySelectorFirst(tweetEl, SELECTORS.timeTag);
+    if (postedTimeEl) {
+      const dt = postedTimeEl.getAttribute('datetime');
       if (dt) {
         postedAt = dt;
       }

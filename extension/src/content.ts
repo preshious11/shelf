@@ -7,7 +7,7 @@ let shouldStop = false;
 let capturedCount = 0;
 let floatingWidget: HTMLElement | null = null;
 
-const BATCH_SIZE = 25;
+const BATCH_SIZE = 10;
 
 // Helper to delay with randomized pacing (1.5 to 3.0 seconds)
 function randomDelay(minMs = 1500, maxMs = 3000): Promise<void> {
@@ -48,9 +48,9 @@ function createFloatingWidget() {
   container.id = 'shelf-floating-widget';
   container.style.cssText = `
     position: fixed;
-    bottom: 24px;
-    right: 24px;
-    z-index: 999999;
+    bottom: 32px;
+    right: 32px;
+    z-index: 2147483647;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     user-select: none;
   `;
@@ -213,15 +213,15 @@ async function startCapture() {
             renderWidgetContent(floatingWidget, 'capturing', { count: capturedCount });
           }
 
-          // If pending batch reaches BATCH_SIZE (25), send immediately via background worker
+          // If pending batch reaches BATCH_SIZE (10), send immediately via background worker
           if (pendingBatch.length >= BATCH_SIZE) {
             const batchToSend = pendingBatch.splice(0, pendingBatch.length);
             const res = await sendBatchViaBackground(batchToSend);
 
             // Incremental sync condition:
-            // If the ingest endpoint reports that items were skipped (already saved),
-            // we have reached our previously saved bookmarks! Stop scrolling.
-            if (res.skipped > 0) {
+            // Only stop if an ENTIRE batch contained 0 new items and all were skipped,
+            // meaning we have reached already-sorted territory.
+            if (res.added === 0 && res.skipped >= BATCH_SIZE) {
               reachedAlreadySaved = true;
               break;
             }
@@ -278,8 +278,9 @@ async function startCapture() {
 }
 
 // Initialize on x.com bookmarks page
-function init() {
+function checkAndInit() {
   const isBookmarksPage =
+    window.location.href.includes('/bookmarks') ||
     window.location.pathname.includes('/bookmarks') ||
     window.location.pathname.includes('/i/bookmarks');
 
@@ -288,14 +289,25 @@ function init() {
   }
 }
 
+// Listen for START_CAPTURE message from popup or shortcuts
+chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
+  if (req.action === 'START_CAPTURE') {
+    startCapture();
+    sendResponse({ started: true });
+  }
+});
+
+// Periodic check to catch single-page client side navigation
+setInterval(checkAndInit, 1200);
+
 // Observe URL changes (single-page application navigation on X)
 let lastUrl = location.href;
 new MutationObserver(() => {
   const url = location.href;
   if (url !== lastUrl) {
     lastUrl = url;
-    init();
+    checkAndInit();
   }
 }).observe(document, { subtree: true, childList: true });
 
-init();
+checkAndInit();

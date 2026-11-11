@@ -8,7 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
   chrome.storage.sync.get(
     ['shelf_last_sync_time', 'shelf_last_sync_count', 'shelf_app_url'],
     (data) => {
-      const appUrl = data.shelf_app_url || 'http://localhost:3000';
+      const appUrl = data.shelf_app_url || 'http://localhost:3005';
 
       if (data.shelf_last_sync_time) {
         const d = new Date(data.shelf_last_sync_time);
@@ -33,7 +33,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   openBookmarksBtn.addEventListener('click', (e) => {
     e.preventDefault();
-    chrome.tabs.create({ url: 'https://x.com/i/bookmarks' });
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const activeTab = tabs[0];
+      if (activeTab && activeTab.url && activeTab.url.includes('bookmarks')) {
+        chrome.tabs.sendMessage(activeTab.id!, { action: 'START_CAPTURE' }, () => {
+          window.close();
+        });
+      } else {
+        chrome.tabs.create({ url: 'https://x.com/i/bookmarks' });
+        window.close();
+      }
+    });
   });
 
   openOptionsBtn.addEventListener('click', (e) => {

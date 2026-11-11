@@ -54,7 +54,15 @@ export async function POST(request: NextRequest) {
       .eq('token_hash', tokenHash)
       .maybeSingle();
 
-    if (tokenError || !tokenRecord) {
+    if (tokenError) {
+      console.error('Database error verifying API token:', tokenError);
+      return NextResponse.json(
+        { error: `Database error verifying API token: ${tokenError.message}. Check SUPABASE_SERVICE_ROLE_KEY in .env.` },
+        { status: 500 }
+      );
+    }
+
+    if (!tokenRecord) {
       return NextResponse.json(
         { error: 'Invalid or revoked API token' },
         { status: 401 }
