@@ -13,6 +13,20 @@ function randomDelay(minMs = 1200, maxMs = 2200): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Detect if current page is bookmarks, history, or has tweets
+function isBookmarksOrHistoryPage(): boolean {
+  const url = window.location.href.toLowerCase();
+  const path = window.location.pathname.toLowerCase();
+  return (
+    url.includes('bookmark') ||
+    url.includes('history') ||
+    path.startsWith('/i/bookmarks') ||
+    path.startsWith('/i/history') ||
+    path.includes('/bookmarks') ||
+    path.includes('/history')
+  );
+}
+
 // Send batch via Background Service Worker
 async function sendBatchViaBackground(
   batch: ExtractedTweet[]
@@ -40,32 +54,26 @@ async function sendBatchViaBackground(
 
 // Find all tweet containers on the page with multiple fallback strategies
 function findTweetElements(doc: Document): Element[] {
-  // Strategy 1: Standard tweet container selectors
-  const candidateSelectors = [
-    'article[data-testid="tweet"]',
-    'article[role="article"]',
-    'div[data-testid="cellInnerDiv"] article',
-    'div[data-testid="tweet"]',
-    'div[data-testid="cellInnerDiv"]',
-    'article',
-  ];
-
-  for (const sel of candidateSelectors) {
-    const els = Array.from(doc.querySelectorAll(sel));
-    // Filter to elements that contain at least a status link, time element, or tweetText
-    const valid = els.filter(
-      (el) =>
-        el.querySelector('a[href*="/status/"]') ||
-        el.querySelector('time') ||
-        el.querySelector('[data-testid="tweetText"]')
-    );
-    if (valid.length > 0) {
-      return valid;
-    }
+  // Strategy 1: Direct tweet articles
+  const articles = Array.from(
+    doc.querySelectorAll('article[data-testid="tweet"], article[role="article"]')
+  );
+  if (articles.length > 0) {
+    return articles;
   }
 
-  // Strategy 2: Status-link traversal fallback
-  // Every tweet on X has at least one status permalink (/username/status/123456789)
+  // Strategy 2: CellInnerDiv containing status link or time
+  const cells = Array.from(doc.querySelectorAll('div[data-testid="cellInnerDiv"]')).filter(
+    (cell) =>
+      cell.querySelector('a[href*="/status/"]') ||
+      cell.querySelector('time') ||
+      cell.querySelector('[data-testid="tweetText"]')
+  );
+  if (cells.length > 0) {
+    return cells;
+  }
+
+  // Strategy 3: Status-link traversal fallback
   const statusLinks = Array.from(doc.querySelectorAll<HTMLAnchorElement>('a[href*="/status/"]'));
   const containers = new Set<Element>();
 
@@ -77,8 +85,7 @@ function findTweetElements(doc: Document): Element[] {
       a.closest('article') ||
       a.closest('div[data-testid="cellInnerDiv"]') ||
       a.closest('div[role="article"]') ||
-      a.closest('section > div > div > div') ||
-      a.parentElement?.parentElement?.parentElement;
+      a.closest('section > div > div > div');
 
     if (card) {
       containers.add(card);
@@ -86,6 +93,32 @@ function findTweetElements(doc: Document): Element[] {
   }
 
   return Array.from(containers);
+}
+
+// Scroll timeline down
+function scrollTimeline(): void {
+  window.scrollBy({
+    top: window.innerHeight * 0.85,
+    behavior: 'smooth',
+  });
+
+  const scrollables = [
+    document.querySelector('main'),
+    document.querySelector('div[data-testid="primaryColumn"]'),
+    document.querySelector('section[role="region"]'),
+  ];
+  for (const el of scrollables) {
+    if (el && el.scrollHeight > el.clientHeight && el.clientHeight > 0) {
+      el.scrollBy({ top: window.innerHeight * 0.85, behavior: 'smooth' });
+    }
+  }
+}
+
+// Micro bounce to trigger virtualized loading
+function scrollBounce(): void {
+  window.scrollBy({ top: -140, behavior: 'auto' });
+  const col = document.querySelector('div[data-testid="primaryColumn"]');
+  if (col) col.scrollBy({ top: -140, behavior: 'auto' });
 }
 
 // Create and inject the floating widget
@@ -122,39 +155,41 @@ function renderWidgetContent(
   state: 'idle' | 'capturing' | 'done' | 'error',
   info?: { count?: number; message?: string }
 ) {
-  const isBookmarks = window.location.href.includes('bookmarks');
-
   if (state === 'idle') {
+    const isSpecialPage = isBookmarksOrHistoryPage();
+    const subLabel = isSpecialPage ? 'Sync bookmarks & history' : 'Sync visible posts';
+
     container.innerHTML = `
       <div style="
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 10px;
         background: #18181B;
         color: #F4F4F5;
-        padding: 10px 18px;
+        padding: 8px 18px;
         border-radius: 9999px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.35);
+        box-shadow: 0 4px 22px rgba(0,0,0,0.45);
         cursor: pointer;
         font-size: 13px;
         font-weight: 600;
         border: 1px solid #38BDF8;
         transition: transform 0.15s ease, background 0.15s ease;
       " id="shelf-btn-start">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#38BDF8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#38BDF8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
         </svg>
-        <span id="shelf-btn-label">${isBookmarks ? 'Save to Shelf' : 'Open Bookmarks'}</span>
+        <div style="display: flex; flex-direction: column; text-align: left; line-height: 1.25;">
+          <span id="shelf-btn-label" style="font-weight: 600; font-size: 13px; color: #F4F4F5;">Save to Shelf</span>
+          <span id="shelf-btn-sub" style="font-size: 10px; color: #38BDF8; font-weight: 500;">${subLabel}</span>
+        </div>
       </div>
     `;
 
     const startBtn = container.querySelector('#shelf-btn-start');
-    startBtn?.addEventListener('click', () => {
-      if (window.location.href.includes('bookmarks')) {
-        startCapture();
-      } else {
-        window.location.href = 'https://x.com/i/bookmarks';
-      }
+    startBtn?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      startCapture();
     });
   } else if (state === 'capturing') {
     container.innerHTML = `
@@ -166,7 +201,7 @@ function renderWidgetContent(
         color: #F4F4F5;
         padding: 10px 18px;
         border-radius: 9999px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+        box-shadow: 0 4px 22px rgba(0,0,0,0.45);
         font-size: 13px;
         font-weight: 500;
         border: 1px solid #0284C7;
@@ -193,7 +228,9 @@ function renderWidgetContent(
     `;
 
     const stopBtn = container.querySelector('#shelf-btn-stop');
-    stopBtn?.addEventListener('click', () => {
+    stopBtn?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       shouldStop = true;
       if (stopBtn) stopBtn.textContent = 'Stopping...';
     });
@@ -257,9 +294,17 @@ async function startCapture() {
   const seenIds = new Set<string>();
   let noNewTweetsRounds = 0;
 
-  console.log('[Shelf] Starting continuous capture on:', window.location.href);
+  console.log('[Shelf] Starting capture on:', window.location.href);
 
   try {
+    // If no tweets immediately visible, wait 800ms for X timeline to mount
+    let initialElements = findTweetElements(document);
+    if (initialElements.length === 0) {
+      console.log('[Shelf] Waiting for initial tweets to mount in DOM...');
+      await randomDelay(800, 1200);
+      initialElements = findTweetElements(document);
+    }
+
     while (!shouldStop && noNewTweetsRounds < 15) {
       // 1. Find all candidate tweet elements in DOM
       const tweetElements = findTweetElements(document);
@@ -301,17 +346,14 @@ async function startCapture() {
 
       if (shouldStop) break;
 
-      // Scroll smoothly down the page to trigger virtualized timeline loading
-      window.scrollBy({
-        top: window.innerHeight * 0.9,
-        behavior: 'smooth',
-      });
+      // Scroll timeline
+      scrollTimeline();
 
       // Micro-bounce if waiting for Twitter GraphQL request
       if (noNewTweetsRounds >= 2) {
-        window.scrollBy({ top: -120, behavior: 'auto' });
-        await randomDelay(300, 500);
-        window.scrollBy({ top: 500, behavior: 'smooth' });
+        scrollBounce();
+        await randomDelay(350, 550);
+        scrollTimeline();
       }
 
       // Human-like randomized delay
@@ -326,7 +368,9 @@ async function startCapture() {
 
     let finishMessage = '';
     if (capturedCount === 0) {
-      finishMessage = 'No bookmarks detected';
+      finishMessage = isBookmarksOrHistoryPage()
+        ? 'No bookmarks detected in this view'
+        : 'No posts found on this page';
     } else {
       finishMessage = `Saved ${capturedCount} bookmarks to Shelf`;
     }
@@ -356,11 +400,30 @@ function ensureWidget() {
   if (!isAttached) {
     createFloatingWidget();
   } else if (existing && !isCapturing) {
-    const isBookmarks = window.location.href.includes('bookmarks');
-    const label = existing.querySelector('#shelf-btn-label');
-    if (label && label.textContent !== (isBookmarks ? 'Save to Shelf' : 'Open Bookmarks')) {
-      label.textContent = isBookmarks ? 'Save to Shelf' : 'Open Bookmarks';
+    const isSpecial = isBookmarksOrHistoryPage();
+    const sub = existing.querySelector('#shelf-btn-sub');
+    const expected = isSpecial ? 'Sync bookmarks & history' : 'Sync visible posts';
+    if (sub && sub.textContent !== expected) {
+      sub.textContent = expected;
     }
+  }
+}
+
+// Auto-sync trigger on page load / refresh
+function checkAutoSync() {
+  try {
+    const autoSync = sessionStorage.getItem('shelf_auto_sync');
+    if (autoSync === '1') {
+      sessionStorage.removeItem('shelf_auto_sync');
+      console.log('[Shelf] Auto-sync scheduled from previous navigation/refresh');
+      setTimeout(() => {
+        if (!isCapturing) {
+          startCapture();
+        }
+      }, 1600);
+    }
+  } catch {
+    // Session storage not accessible
   }
 }
 
@@ -386,3 +449,4 @@ new MutationObserver(() => {
 }).observe(document, { subtree: true, childList: true });
 
 ensureWidget();
+checkAutoSync();

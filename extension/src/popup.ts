@@ -35,8 +35,9 @@ document.addEventListener('DOMContentLoaded', () => {
     e.preventDefault();
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const activeTab = tabs[0];
-      if (activeTab && activeTab.url && activeTab.url.includes('bookmarks')) {
-        chrome.tabs.sendMessage(activeTab.id!, { action: 'START_CAPTURE' }, () => {
+      const url = (activeTab?.url || '').toLowerCase();
+      if (activeTab && activeTab.id && (url.includes('x.com') || url.includes('twitter.com'))) {
+        chrome.tabs.sendMessage(activeTab.id, { action: 'START_CAPTURE' }, () => {
           window.close();
         });
       } else {
@@ -51,4 +52,3 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.runtime.openOptionsPage();
   });
 });
-
