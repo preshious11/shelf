@@ -11,18 +11,24 @@ export const SELECTORS = {
     'div[data-testid="primaryColumn"] section',
     'main[role="main"] section',
     'div[aria-label="Timeline: Bookmarks"]',
+    'section',
   ],
 
   // Tweet card container
   tweet: [
     'article[data-testid="tweet"]',
     'article[role="article"]',
+    'div[data-testid="cellInnerDiv"] article',
+    'div[data-testid="cellInnerDiv"]',
+    'div[data-testid="tweet"]',
+    'article',
   ],
 
   // Tweet content text
   tweetText: [
     'div[data-testid="tweetText"]',
     'div[lang]',
+    'span[lang]',
   ],
 
   // Author information block
@@ -49,10 +55,13 @@ export const SELECTORS = {
   // Media attachments (photos / videos / gifs)
   tweetPhoto: [
     'div[data-testid="tweetPhoto"] img',
+    'img[src*="media"]',
+    'img[src*="tweet_video_thumb"]',
   ],
   tweetVideo: [
     'div[data-testid="videoPlayer"] video',
     'div[data-testid="videoComponent"] video',
+    'video',
   ],
 
   // Embedded card previews (links / articles)
