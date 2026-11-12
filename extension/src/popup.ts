@@ -67,10 +67,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (syncProgressCard) syncProgressCard.style.display = 'block';
       if (syncStatusVal) {
         if (state.unsavedCount && state.unsavedCount > 0) {
-          syncStatusVal.textContent = `Done (${state.unsavedCount} unsaved)`;
+          syncStatusVal.textContent = state.statusText || `Done (${state.unsavedCount} unsaved)`;
           syncStatusVal.style.color = '#F59E0B';
         } else {
-          syncStatusVal.textContent = 'Done';
+          syncStatusVal.textContent = state.statusText || 'Done';
           syncStatusVal.style.color = '#10B981';
         }
       }
@@ -102,10 +102,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (syncProgressCard) syncProgressCard.style.display = 'block';
         if (syncStatusVal) {
           if (msg.unsavedCount && msg.unsavedCount > 0) {
-            syncStatusVal.textContent = `Done (${msg.unsavedCount} unsaved)`;
+            syncStatusVal.textContent = msg.statusText || `Done (${msg.unsavedCount} unsaved)`;
             syncStatusVal.style.color = '#F59E0B';
           } else {
-            syncStatusVal.textContent = 'Done';
+            syncStatusVal.textContent = msg.statusText || 'Done';
             syncStatusVal.style.color = '#10B981';
           }
         }

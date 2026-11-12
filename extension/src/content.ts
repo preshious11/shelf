@@ -149,6 +149,49 @@ function buildNextPageRequest(
   }
 }
 
+/**
+ * Build the URL and optional body for the top page request by removing any cursor
+ */
+function buildTopPageRequest(baseRequest: InterceptedRequest): { url: string; body?: string } {
+  const method = (baseRequest.method || 'GET').toUpperCase();
+
+  if (method === 'GET') {
+    try {
+      const urlObj = new URL(baseRequest.url, window.location.origin);
+      const varsStr = urlObj.searchParams.get('variables');
+      if (varsStr) {
+        const vars = JSON.parse(varsStr);
+        delete vars.cursor;
+        vars.count = 20;
+        urlObj.searchParams.set('variables', JSON.stringify(vars));
+      } else {
+        urlObj.searchParams.delete('cursor');
+      }
+      return { url: urlObj.toString() };
+    } catch {
+      return { url: baseRequest.url };
+    }
+  } else {
+    // POST request
+    let nextBody = baseRequest.body;
+    try {
+      if (baseRequest.body) {
+        const parsed = JSON.parse(baseRequest.body);
+        if (parsed.variables) {
+          delete parsed.variables.cursor;
+          parsed.variables.count = 20;
+        } else {
+          delete parsed.cursor;
+        }
+        nextBody = JSON.stringify(parsed);
+      }
+    } catch {
+      // Keep existing body if parsing fails
+    }
+    return { url: baseRequest.url, body: nextBody };
+  }
+}
+
 // Helper: load saved tweet IDs from local persistent extension storage
 async function loadSavedTweetIdsFromStorage(): Promise<Set<string>> {
   return new Promise((resolve) => {
@@ -448,8 +491,207 @@ function stopCapture() {
   }
 }
 
+/**
+ * Run a pagination pass (either incremental or full scan to the end).
+ * Returns whether the pass completed normally without being stopped by user or 401.
+ */
+async function runPaginationPass(options: {
+  captured: InterceptedRequest;
+  startCursor: string | null;
+  isIncremental: boolean;
+  isFirstPassFromInitialTop: boolean;
+  passName?: string;
+}): Promise<{ reachedEnd: boolean; authError?: boolean }> {
+  const { captured, startCursor, isIncremental, isFirstPassFromInitialTop, passName } = options;
+
+  let pageNumber = 1;
+  let currentCursor: string | null = startCursor;
+  let lastCursor: string | null = null;
+  let isFirstPage = isFirstPassFromInitialTop;
+  let consecutiveAlreadySavedPages = 0;
+
+  console.log(
+    `[shelf] Starting pass "${passName || 'pagination'}" (cursor: ${startCursor ? 'resumed' : 'top'}, incremental: ${isIncremental})...`
+  );
+
+  while (!shouldStop) {
+    let pageResult: ParsedBookmarksPage | null = null;
+
+    try {
+      if (isFirstPage) {
+        isFirstPage = false;
+        pageResult = parseBookmarksApiResponse(captured.response);
+      } else {
+        const pageRequest = currentCursor
+          ? buildNextPageRequest(captured, currentCursor)
+          : buildTopPageRequest(captured);
+
+        const fetchRes = await requestNextPageFromMainWorld({
+          url: pageRequest.url,
+          method: captured.method,
+          headers: captured.headers,
+          body: pageRequest.body,
+        });
+
+        if (shouldStop) return { reachedEnd: false };
+
+        // Rate limit 429 handling
+        if (fetchRes.status === 429) {
+          const resetHeader = fetchRes.rateLimitReset;
+          const nowSec = Math.floor(Date.now() / 1000);
+          let waitSeconds = resetHeader && resetHeader > nowSec ? resetHeader - nowSec : 60;
+          if (waitSeconds > 900) waitSeconds = 900;
+
+          console.warn(`[shelf] HTTP 429 Rate limited. Waiting ${waitSeconds}s until reset (${resetHeader})...`);
+
+          if (!isIncremental && currentCursor) {
+            await chrome.storage.local.set({ shelf_last_cursor: currentCursor });
+          }
+
+          for (let s = waitSeconds; s > 0; s--) {
+            if (shouldStop) break;
+            const mins = Math.floor(s / 60);
+            const secs = s % 60;
+            const formatted = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+            const statusText = `Rate limited by X. Resuming in ${formatted}...`;
+
+            if (floatingWidget) {
+              renderWidgetContent(floatingWidget, 'capturing', {
+                newCount: newlySavedCount + pendingQueue.length,
+                existingCount: alreadySavedCount,
+                statusText,
+              });
+            }
+            broadcastSyncProgress('rate_limited', statusText);
+
+            const ok = await sleepInterruptible(1000);
+            if (!ok || shouldStop) break;
+          }
+
+          if (shouldStop) return { reachedEnd: false };
+          continue;
+        }
+
+        if (!fetchRes.success || !fetchRes.response) {
+          console.error('[shelf] Failed to fetch next bookmarks page:', fetchRes.error || fetchRes.status);
+          await sleepInterruptible(2000);
+          return { reachedEnd: false };
+        }
+
+        pageResult = parseBookmarksApiResponse(fetchRes.response);
+      }
+
+      if (!pageResult) {
+        console.warn('[shelf] Empty page result returned.');
+        return { reachedEnd: true };
+      }
+
+      const pageTweets = pageResult.tweets;
+      let newToSaveInThisPage = 0;
+
+      for (const tweet of pageTweets) {
+        if (shouldStop) break;
+        try {
+          if (!tweet || !tweet.tweet_id) continue;
+
+          const isNewToSession = !seenThisSession.has(tweet.tweet_id);
+          if (isNewToSession) {
+            seenThisSession.add(tweet.tweet_id);
+          }
+
+          if (savedTweetIds.has(tweet.tweet_id)) {
+            if (isNewToSession) {
+              alreadySavedCount++;
+            }
+          } else {
+            if (isNewToSession) {
+              pendingQueue.push(tweet);
+              newToSaveInThisPage++;
+            }
+          }
+        } catch (tErr) {
+          console.error('[shelf] Error processing parsed tweet:', tErr);
+        }
+      }
+
+      // Check if page contains ONLY tweets already saved in Shelf
+      const isPageAllAlreadySaved = pageTweets.length > 0 && newToSaveInThisPage === 0;
+
+      if (isPageAllAlreadySaved) {
+        consecutiveAlreadySavedPages++;
+      } else if (newToSaveInThisPage > 0) {
+        consecutiveAlreadySavedPages = 0;
+      }
+
+      // Process pending queue in batches of ~20
+      const queueRes = await processPendingQueue(false);
+      if (queueRes.authError) {
+        console.error('[shelf] Sync stopped due to auth error (401).');
+        return { reachedEnd: false, authError: true };
+      }
+
+      const bottomCursor = pageResult.bottomCursor;
+
+      // Logging requirement:
+      console.log(
+        `[shelf] Page ${pageNumber}: ${pageTweets.length} tweets on page, ` +
+        `${seenThisSession.size} total seen, ${pendingQueue.length + newlySavedCount} new to save, ` +
+        `bottom cursor: ${bottomCursor ? (bottomCursor === currentCursor ? 'unchanged' : 'received') : 'none'}`
+      );
+
+      // Update widget UI
+      if (floatingWidget) {
+        renderWidgetContent(floatingWidget, 'capturing', {
+          newCount: newlySavedCount + pendingQueue.length,
+          existingCount: alreadySavedCount,
+          statusText: `Page ${pageNumber} • ${seenThisSession.size} seen`,
+        });
+      }
+      broadcastSyncProgress('capturing');
+
+      // Requirement 1 Incremental Stop condition:
+      // "stop once 2 consecutive pages contain only tweets already saved in Shelf (log 'Caught up with existing bookmarks')"
+      if (isIncremental && consecutiveAlreadySavedPages >= 2) {
+        console.log('[shelf] Caught up with existing bookmarks');
+        return { reachedEnd: true };
+      }
+
+      // Stop condition: page returns no new tweet entries
+      if (pageTweets.length === 0) {
+        console.log(`[shelf] Page ${pageNumber} returned 0 tweets. Timeline ended.`);
+        return { reachedEnd: true };
+      }
+
+      // Stop condition: bottom cursor reached end or stopped changing
+      if (!bottomCursor || bottomCursor === currentCursor || bottomCursor === lastCursor) {
+        console.log(`[shelf] Bottom cursor reached end or stopped changing (${bottomCursor}).`);
+        return { reachedEnd: true };
+      }
+
+      // If full manual scan, persist cursor for resumption
+      if (!isIncremental) {
+        await chrome.storage.local.set({ shelf_last_cursor: bottomCursor });
+      }
+
+      lastCursor = currentCursor;
+      currentCursor = bottomCursor;
+      pageNumber++;
+
+      // Wait 2–3 seconds between pages
+      const delay = Math.floor(Math.random() * 1000) + 2000;
+      const ok = await sleepInterruptible(delay);
+      if (!ok || shouldStop) return { reachedEnd: false };
+    } catch (pageErr) {
+      console.error('[shelf] Error in page iteration:', pageErr);
+      await sleepInterruptible(2000);
+    }
+  }
+
+  return { reachedEnd: !shouldStop };
+}
+
 // Start continuous bookmark sync using network-based GraphQL pagination
-async function startCapture() {
+async function startCapture(isAutoSync = false) {
   if (isCapturing) {
     console.log('[shelf] Sync is already in progress. Ignoring duplicate start request.');
     return;
@@ -474,7 +716,7 @@ async function startCapture() {
   }
   broadcastSyncProgress('capturing', 'Syncing… 0 saved');
 
-  console.log('[shelf] Starting network-based bookmark sync...');
+  console.log(`[shelf] Starting network-based bookmark sync (${isAutoSync ? 'auto-sync incremental' : 'manual full scan'})...`);
 
   // 1. Synchronize known saved IDs: Server is authoritative source of truth
   const localSavedIds = await loadSavedTweetIdsFromStorage();
@@ -550,191 +792,87 @@ async function startCapture() {
     return;
   }
 
-  // 3. Check for stored cursor resume
+  // 3. Check for stored cursor resume (manual full scans only)
   let storedCursor: string | null = null;
-  try {
-    const data = await new Promise<{ shelf_last_cursor?: string }>((resolve) => {
-      chrome.storage.local.get(['shelf_last_cursor'], (res) => resolve(res || {}));
-    });
-    if (data?.shelf_last_cursor) {
-      storedCursor = data.shelf_last_cursor;
-      console.log('[shelf] Resuming sync from saved cursor:', storedCursor);
+  if (!isAutoSync) {
+    try {
+      const data = await new Promise<{ shelf_last_cursor?: string }>((resolve) => {
+        chrome.storage.local.get(['shelf_last_cursor'], (res) => resolve(res || {}));
+      });
+      if (data?.shelf_last_cursor) {
+        storedCursor = data.shelf_last_cursor;
+        console.log('[shelf] Resuming sync from saved cursor:', storedCursor);
+      }
+    } catch (err) {
+      console.warn('[shelf] Error checking stored cursor:', err);
     }
-  } catch (err) {
-    console.warn('[shelf] Error checking stored cursor:', err);
   }
 
-  // 4. Pagination loop
-  let pageNumber = 1;
-  let currentCursor: string | null = storedCursor;
-  let lastCursor: string | null = null;
-  let isFirstPageFromInitial = storedCursor ? false : true;
-
   try {
-    while (!shouldStop) {
-      let pageResult: ParsedBookmarksPage | null = null;
+    if (isAutoSync) {
+      // 1. Auto-sync: start from the top and stop once 2 consecutive pages contain only tweets already saved
+      await runPaginationPass({
+        captured,
+        startCursor: null,
+        isIncremental: true,
+        isFirstPassFromInitialTop: true,
+        passName: 'Auto-sync incremental pass',
+      });
+    } else if (storedCursor) {
+      // 2. Resuming from shelf_last_cursor:
+      // Pass 1: resume from saved cursor to the very end
+      const pass1 = await runPaginationPass({
+        captured,
+        startCursor: storedCursor,
+        isIncremental: false,
+        isFirstPassFromInitialTop: false,
+        passName: 'Resumed full scan pass',
+      });
 
-      try {
-        if (isFirstPageFromInitial) {
-          // Use captured initial page response directly
-          isFirstPageFromInitial = false;
-          pageResult = parseBookmarksApiResponse(captured.response);
-        } else {
-          if (!currentCursor) {
-            console.log('[shelf] No more cursor available. Reached the end of bookmarks timeline.');
-            break;
-          }
-
-          const pageRequest = buildNextPageRequest(captured, currentCursor);
-          const fetchRes = await requestNextPageFromMainWorld({
-            url: pageRequest.url,
-            method: captured.method,
-            headers: captured.headers,
-            body: pageRequest.body,
-          });
-
-          if (shouldStop) break;
-
-          // Rate limit 429 handling
-          if (fetchRes.status === 429) {
-            const resetHeader = fetchRes.rateLimitReset;
-            const nowSec = Math.floor(Date.now() / 1000);
-            let waitSeconds = resetHeader && resetHeader > nowSec ? resetHeader - nowSec : 60;
-            if (waitSeconds > 900) waitSeconds = 900; // Cap at 15 minutes max safeguard
-
-            console.warn(`[shelf] HTTP 429 Rate limited. Waiting ${waitSeconds}s until reset (${resetHeader})...`);
-
-            // Store current cursor so reload/stop can resume
-            if (currentCursor) {
-              await chrome.storage.local.set({ shelf_last_cursor: currentCursor });
-            }
-
-            for (let s = waitSeconds; s > 0; s--) {
-              if (shouldStop) break;
-              const mins = Math.floor(s / 60);
-              const secs = s % 60;
-              const formatted = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-              const statusText = `Rate limited by X. Resuming in ${formatted}...`;
-
-              if (floatingWidget) {
-                renderWidgetContent(floatingWidget, 'capturing', {
-                  newCount: newlySavedCount + pendingQueue.length,
-                  existingCount: alreadySavedCount,
-                  statusText,
-                });
-              }
-              broadcastSyncProgress('rate_limited', statusText);
-
-              const ok = await sleepInterruptible(1000);
-              if (!ok || shouldStop) break;
-            }
-
-            if (shouldStop) break;
-            // Retry the same cursor after countdown
-            continue;
-          }
-
-          if (!fetchRes.success || !fetchRes.response) {
-            console.error('[shelf] Failed to fetch next bookmarks page:', fetchRes.error || fetchRes.status);
-            // Brief pause before breaking or retrying
-            await sleepInterruptible(2000);
-            break;
-          }
-
-          pageResult = parseBookmarksApiResponse(fetchRes.response);
-        }
-
-        if (!pageResult) {
-          console.warn('[shelf] Empty page result returned.');
-          break;
-        }
-
-        const pageTweets = pageResult.tweets;
-        let newToSaveCount = 0;
-
-        for (const tweet of pageTweets) {
-          if (shouldStop) break;
-          try {
-            if (!tweet || !tweet.tweet_id) continue;
-
-            const isNewToSession = !seenThisSession.has(tweet.tweet_id);
-            if (isNewToSession) {
-              seenThisSession.add(tweet.tweet_id);
-            }
-
-            if (savedTweetIds.has(tweet.tweet_id)) {
-              if (isNewToSession) {
-                alreadySavedCount++;
-              }
-            } else {
-              if (isNewToSession) {
-                pendingQueue.push(tweet);
-                newToSaveCount++;
-              }
-            }
-          } catch (tErr) {
-            console.error('[shelf] Error processing parsed tweet:', tErr);
-          }
-        }
-
-        // Process queue in batches of ~20
-        const queueRes = await processPendingQueue(false);
-        if (queueRes.authError) {
-          console.error('[shelf] Sync stopped due to auth error (401).');
-          isCapturing = false;
-          shouldStop = false;
-          return;
-        }
-
-        const bottomCursor = pageResult.bottomCursor;
-
-        // Logging: page number, tweets on page, total seen, new to save, and bottom cursor status
-        console.log(
-          `[shelf] Page ${pageNumber}: ${pageTweets.length} tweets on page, ` +
-          `${seenThisSession.size} total seen, ${pendingQueue.length + newlySavedCount} new to save, ` +
-          `bottom cursor: ${bottomCursor ? (bottomCursor === currentCursor ? 'unchanged' : 'received') : 'none'}`
-        );
-
-        // Update widget
+      // When a run resumes from a saved cursor and reaches the end, also do an incremental pass from the top
+      // so bookmarks added since the interruption aren't missed.
+      if (pass1.reachedEnd && !shouldStop) {
+        console.log('[shelf] Resumed pass reached end. Now running incremental pass from the top so bookmarks added since interruption are not missed...');
         if (floatingWidget) {
           renderWidgetContent(floatingWidget, 'capturing', {
             newCount: newlySavedCount + pendingQueue.length,
             existingCount: alreadySavedCount,
-            statusText: `Page ${pageNumber} • ${seenThisSession.size} seen`,
+            statusText: 'Catching up from top...',
           });
         }
-        broadcastSyncProgress('capturing');
+        broadcastSyncProgress('capturing', 'Catching up from top...');
 
-        // Stop conditions: page returns no new tweet entries OR bottom cursor stops changing
-        if (pageTweets.length === 0) {
-          console.log(`[shelf] Page ${pageNumber} returned 0 tweets. Bookmarks timeline ended.`);
-          break;
+        const pass2 = await runPaginationPass({
+          captured,
+          startCursor: null,
+          isIncremental: true,
+          isFirstPassFromInitialTop: false,
+          passName: 'Post-resume incremental catch-up pass',
+        });
+
+        // Clear shelf_last_cursor only after BOTH are done!
+        if (pass2.reachedEnd && !shouldStop) {
+          await chrome.storage.local.remove('shelf_last_cursor');
+          console.log('[shelf] Both resumed pass and top catch-up pass completed. Cleared shelf_last_cursor.');
         }
+      }
+    } else {
+      // 3. Manual full scan from top to the very end
+      const fullPass = await runPaginationPass({
+        captured,
+        startCursor: null,
+        isIncremental: false,
+        isFirstPassFromInitialTop: true,
+        passName: 'Manual full scan pass',
+      });
 
-        if (!bottomCursor || bottomCursor === currentCursor || bottomCursor === lastCursor) {
-          console.log(`[shelf] Bottom cursor reached end or stopped changing (${bottomCursor}).`);
-          break;
-        }
-
-        // Save current cursor to storage for resilient resume
-        await chrome.storage.local.set({ shelf_last_cursor: bottomCursor });
-
-        lastCursor = currentCursor;
-        currentCursor = bottomCursor;
-        pageNumber++;
-
-        // Wait 2–3 seconds between pages
-        const delay = Math.floor(Math.random() * 1000) + 2000;
-        const ok = await sleepInterruptible(delay);
-        if (!ok || shouldStop) break;
-      } catch (pageErr) {
-        console.error('[shelf] Error in page iteration:', pageErr);
-        // Continue to avoid stopping on transient parse error
-        await sleepInterruptible(2000);
+      if (fullPass.reachedEnd && !shouldStop) {
+        await chrome.storage.local.remove('shelf_last_cursor');
+        console.log('[shelf] Full scan completed to end. Cleared shelf_last_cursor.');
       }
     }
 
-    // 5. Final flush: ensure any remaining tweets in pendingQueue are flushed with retry before completing
+    // 4. Final flush: ensure any remaining tweets in pendingQueue are flushed with retry before completing
     if (pendingQueue.length > 0 && !shouldStop) {
       console.log(`[shelf] Flushing final ${pendingQueue.length} queued tweets with retry before completing...`);
       if (floatingWidget) {
@@ -756,11 +894,6 @@ async function startCapture() {
       } catch (flushErr) {
         console.error('[shelf] Error in final queue flush:', flushErr);
       }
-    }
-
-    // Clear stored cursor if finished normally (not stopped)
-    if (!shouldStop) {
-      await chrome.storage.local.remove('shelf_last_cursor');
     }
 
     // Save final stats
@@ -786,6 +919,14 @@ async function startCapture() {
 
     if (shouldStop) {
       finishMsg = `Stopped (${newlySavedCount} saved, ${totalSeen} seen)`;
+    } else if (isAutoSync) {
+      // Incremental sync finish message: "Up to date: N new saved"
+      if (unsavedCount > 0) {
+        isWarning = true;
+        finishMsg = `Up to date: ${newlySavedCount} new saved (${unsavedCount} unsaved)`;
+      } else {
+        finishMsg = `Up to date: ${newlySavedCount} new saved`;
+      }
     } else if (unsavedCount > 0) {
       isWarning = true;
       finishMsg = `Done: ${totalSeen} seen, ${newlySavedCount} newly saved (${unsavedCount} unsaved)`;
@@ -890,7 +1031,7 @@ function renderWidgetContent(
     startBtn?.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      startCapture();
+      startCapture(false);
     });
   } else if (state === 'capturing') {
     const saved = info?.newCount || newlySavedCount;
@@ -1125,7 +1266,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       if (isCapturing) {
         sendResponse({ started: false, alreadyRunning: true });
       } else {
-        startCapture();
+        startCapture(false);
         sendResponse({ started: true });
       }
       return true;
@@ -1192,7 +1333,7 @@ function checkAndScheduleAutoSync() {
         if (isBookmarksPage() && !isCapturing && !hasAutoSyncedForCurrentVisit) {
           hasAutoSyncedForCurrentVisit = true;
           console.log('[shelf] Triggering automatic bookmark sync on x.com/i/bookmarks...');
-          startCapture();
+          startCapture(true);
         }
       }, 3000);
     });
