@@ -135,6 +135,17 @@ async function sendBatchViaBackground(
   });
 }
 
+// Helper: interruptible sleep that checks shouldStop frequently (exits within ~100ms when stopped)
+async function sleepInterruptible(ms: number, stepMs = 100): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < ms) {
+    if (shouldStop) return false;
+    const remaining = ms - (Date.now() - start);
+    await new Promise((r) => setTimeout(r, Math.min(stepMs, remaining)));
+  }
+  return !shouldStop;
+}
+
 // Helper: send batch with retry and exponential backoff (up to 5 attempts)
 async function sendBatchWithRetry(batch: ExtractedTweet[], maxAttempts = 5): Promise<boolean> {
   let attempt = 0;
@@ -149,6 +160,7 @@ async function sendBatchWithRetry(batch: ExtractedTweet[], maxAttempts = 5): Pro
       console.log('[shelf] Ingest response:', res);
       return true;
     } catch (err: unknown) {
+      if (shouldStop) return false;
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[shelf] Batch attempt ${attempt}/${maxAttempts} failed:`, msg);
 
@@ -162,10 +174,10 @@ async function sendBatchWithRetry(batch: ExtractedTweet[], maxAttempts = 5): Pro
       const waitTime = delayMs + jitter;
       console.log(`[shelf] Retrying batch in ${waitTime}ms...`);
 
-      const startWait = Date.now();
-      while (Date.now() - startWait < waitTime) {
-        if (shouldStop) return false;
-        await new Promise((r) => setTimeout(r, 200));
+      const ok = await sleepInterruptible(waitTime);
+      if (!ok || shouldStop) {
+        console.log('[shelf] Batch backoff cancelled due to stop request.');
+        return false;
       }
       delayMs *= 2;
     }
@@ -284,34 +296,63 @@ function isTwitterLoading(): boolean {
 }
 
 // Helper: check and handle Twitter's "Retry" button after rate limit
+// Follow-up fix: Wait 60-second cooldown FIRST, check shouldStop for early exit, then click Retry, then resume
 async function checkAndHandleRetry(): Promise<boolean> {
   try {
     const candidates = Array.from(document.querySelectorAll('button, div[role="button"]'));
+    let retryButton: HTMLElement | null = null;
     for (const el of candidates) {
       const txt = (el.textContent || '').trim().toLowerCase();
       if (txt === 'retry' || txt === 'try again') {
-        console.log('[shelf] Twitter retry button detected! Clicking and cooling down for 60 seconds...');
-        try {
-          (el as HTMLElement).click();
-        } catch (clickErr) {
-          console.error('[shelf] Error clicking retry button:', clickErr);
-        }
-
-        broadcastSyncProgress('rate_limited', 'Rate limited by X. Waiting 60s...');
-
-        // Wait 60 seconds, checking shouldStop every second
-        for (let sec = 60; sec > 0; sec--) {
-          if (shouldStop) break;
-          if (floatingWidget) {
-            renderWidgetContent(floatingWidget, 'capturing', {
-              newCount: newlySavedCount,
-              statusText: `Rate limited. Waiting ${sec}s...`,
-            });
-          }
-          await new Promise((r) => setTimeout(r, 1000));
-        }
-        return true;
+        retryButton = el as HTMLElement;
+        break;
       }
+    }
+
+    if (retryButton) {
+      console.log('[shelf] Twitter retry button detected! Waiting 60-second cooldown first...');
+      broadcastSyncProgress('rate_limited', 'Rate limited by X. Waiting 60s...');
+
+      // 1. Wait the 60-second cooldown FIRST, checking shouldStop every tick for immediate exit
+      for (let sec = 60; sec > 0; sec--) {
+        if (shouldStop) {
+          console.log('[shelf] Sync stopped during rate-limit cooldown.');
+          return false;
+        }
+        if (floatingWidget) {
+          renderWidgetContent(floatingWidget, 'capturing', {
+            newCount: newlySavedCount,
+            statusText: `Rate limited. Waiting ${sec}s...`,
+          });
+        }
+        const ok = await sleepInterruptible(1000);
+        if (!ok || shouldStop) {
+          console.log('[shelf] Sync stopped during rate-limit cooldown.');
+          return false;
+        }
+      }
+
+      if (shouldStop) return false;
+
+      // 2. Cooldown complete: click Retry button now
+      console.log('[shelf] 60-second cooldown elapsed. Clicking Retry button...');
+      // Re-query in case DOM element was detached during 60s
+      const currentRetryBtn =
+        Array.from(document.querySelectorAll('button, div[role="button"]')).find((b) => {
+          const t = (b.textContent || '').trim().toLowerCase();
+          return t === 'retry' || t === 'try again';
+        }) || retryButton;
+
+      try {
+        (currentRetryBtn as HTMLElement).click();
+        console.log('[shelf] Clicked Retry button.');
+      } catch (clickErr) {
+        console.error('[shelf] Error clicking retry button:', clickErr);
+      }
+
+      // 3. Brief pause to allow X to re-fetch and render tweets, interruptible
+      await sleepInterruptible(1500);
+      return !shouldStop;
     }
   } catch (err) {
     console.error('[shelf] Error in checkAndHandleRetry:', err);
@@ -321,17 +362,20 @@ async function checkAndHandleRetry(): Promise<boolean> {
 
 // Helper: nudge lazy loader when 0 tweets found in a round (scroll up ~600px, pause, then jump to bottom)
 async function nudgeLazyLoader(): Promise<void> {
+  if (shouldStop) return;
   console.log('[shelf] Nudging lazy loader: scrolling up ~600px, then jumping to bottom...');
   try {
     window.scrollBy({ top: -600, behavior: 'auto' });
-    await new Promise((r) => setTimeout(r, 450));
+    const ok1 = await sleepInterruptible(450);
+    if (!ok1 || shouldStop) return;
+
     window.scrollTo({
       top: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight),
       behavior: 'smooth',
     });
     window.dispatchEvent(new Event('scroll'));
     window.dispatchEvent(new WheelEvent('wheel', { deltaY: 450, bubbles: true }));
-    await new Promise((r) => setTimeout(r, 350));
+    await sleepInterruptible(350);
   } catch (err) {
     console.error('[shelf] Error nudging lazy loader:', err);
   }
@@ -394,6 +438,11 @@ function waitForNewTweetsOrMutation(
   timeoutMs = 5000
 ): Promise<boolean> {
   return new Promise((resolve) => {
+    if (shouldStop) {
+      resolve(false);
+      return;
+    }
+
     // Check if new IDs already mounted
     const currentIds = getVisibleStatusIds();
     for (const id of currentIds) {
@@ -444,6 +493,11 @@ function waitForNewTweetsOrMutation(
 
     try {
       observer = new MutationObserver(() => {
+        if (shouldStop) {
+          cleanup();
+          resolve(false);
+          return;
+        }
         checkForChanges();
       });
       observer.observe(document.body, { childList: true, subtree: true });
@@ -451,8 +505,8 @@ function waitForNewTweetsOrMutation(
       console.error('[shelf] Error creating MutationObserver:', obsErr);
     }
 
-    // Interval poll fallback every 250ms
-    checkInterval = window.setInterval(checkForChanges, 250);
+    // Interval poll fallback every 100ms for instant stop responsiveness
+    checkInterval = window.setInterval(checkForChanges, 100);
 
     // Timeout fallback after timeoutMs
     timer = window.setTimeout(() => {
@@ -642,6 +696,13 @@ function stopCapture() {
   console.log('[shelf] Stop requested by user');
   shouldStop = true;
   broadcastSyncProgress('idle', 'Stopping sync...');
+  if (floatingWidget) {
+    renderWidgetContent(floatingWidget, 'capturing', {
+      newCount: newlySavedCount,
+      existingCount: alreadySavedCount,
+      statusText: 'Stopping...',
+    });
+  }
 }
 
 // Start continuous capture process
@@ -666,19 +727,29 @@ async function startCapture() {
 
   console.log('[shelf] Starting full continuous bookmark sync...');
 
-  // 1. Load saved IDs from local storage and backend
+  // 1. Synchronize known saved IDs: Server is authoritative source of truth
   const localSavedIds = await loadSavedTweetIdsFromStorage();
-  savedTweetIds = new Set(localSavedIds);
+  console.log(`[shelf] Loaded ${localSavedIds.size} saved IDs from local storage cache.`);
 
-  console.log(`[shelf] Loaded ${savedTweetIds.size} saved IDs from local storage.`);
   const backendCheck = await fetchKnownIdsViaBackground();
   if (backendCheck.success && backendCheck.ids) {
-    backendCheck.ids.forEach((id) => savedTweetIds.add(id));
+    // SERVER'S KNOWN IDS IS THE SOURCE OF TRUTH:
+    // If a user deleted a tweet in the Shelf web app, it will NOT be in backendCheck.ids.
+    // By using backendCheck.ids as the authoritative source of truth,
+    // deleted tweets are removed from savedTweetIds and shelf_saved_tweet_ids,
+    // allowing them to be re-discovered on X and re-saved!
+    savedTweetIds = new Set(backendCheck.ids);
     await persistSavedTweetIds(savedTweetIds);
-    console.log(`[shelf] Total known saved IDs merged: ${savedTweetIds.size}`);
-  } else if (backendCheck.error) {
-    console.warn('[shelf] Could not fetch known IDs from backend:', backendCheck.error);
-    // Continue with locally stored IDs!
+    console.log(`[shelf] Synchronized with Shelf server: ${savedTweetIds.size} active saved IDs.`);
+  } else {
+    // Fallback if backend is unreachable (e.g., offline or network error):
+    // Use local storage cache so sync can still proceed without duplicates.
+    console.warn(
+      '[shelf] Could not reach Shelf server to fetch known IDs (' +
+        (backendCheck.error || 'network error') +
+        '). Using local storage cache.'
+    );
+    savedTweetIds = new Set(localSavedIds);
   }
 
   let emptyRounds = 0;
@@ -687,7 +758,7 @@ async function startCapture() {
   try {
     while (!shouldStop && emptyRounds < MAX_EMPTY_ROUNDS) {
       try {
-        // A. Check for X's "Retry" button
+        // A. Check for X's "Retry" button (waits 60s cooldown first, then clicks Retry)
         const hadRetry = await checkAndHandleRetry();
         if (hadRetry) {
           emptyRounds = 0;
@@ -696,10 +767,11 @@ async function startCapture() {
 
         if (shouldStop) break;
 
-        // B. Check for active loading spinner
+        // B. Check for active loading spinner (interruptible wait)
         if (isTwitterLoading()) {
           console.log('[shelf] Twitter network loading spinner active, waiting...');
-          await new Promise((r) => setTimeout(r, 1200));
+          const ok = await sleepInterruptible(1200);
+          if (!ok || shouldStop) break;
           continue;
         }
 
@@ -766,7 +838,7 @@ async function startCapture() {
           triggerDeepScroll();
         }
 
-        // I. Wait with MutationObserver for X to render new tweet articles (up to 5s)
+        // I. Wait with MutationObserver for X to render new tweet articles (up to 5s, checks shouldStop every 100ms)
         await waitForNewTweetsOrMutation(previousVisibleIds, 5000);
       } catch (iterErr) {
         console.error('[shelf] Loop iteration error:', iterErr);
@@ -774,14 +846,23 @@ async function startCapture() {
       }
     }
 
-    // Flush any remaining tweets in queue (even if < 20)
-    try {
-      if (pendingQueue.length > 0 && !shouldStop) {
-        console.log(`[shelf] Flushing final ${pendingQueue.length} queued tweets...`);
-        await processPendingQueue(true);
+    // 2. Final flush: ensure any remaining tweets in pendingQueue are flushed with retry before reporting isDone
+    if (pendingQueue.length > 0 && !shouldStop) {
+      console.log(`[shelf] Flushing final ${pendingQueue.length} queued tweets with retry before completing...`);
+      if (floatingWidget) {
+        renderWidgetContent(floatingWidget, 'capturing', {
+          newCount: newlySavedCount + pendingQueue.length,
+          existingCount: alreadySavedCount,
+          statusText: `Saving final ${pendingQueue.length} bookmarks...`,
+        });
       }
-    } catch (flushErr) {
-      console.error('[shelf] Error in final queue flush:', flushErr);
+      broadcastSyncProgress('capturing', `Saving final ${pendingQueue.length} bookmarks...`);
+
+      try {
+        await processPendingQueue(true); // forceFlushAll = true with 5-attempt exponential backoff retry
+      } catch (flushErr) {
+        console.error('[shelf] Error in final queue flush:', flushErr);
+      }
     }
 
     // Save final stats
@@ -794,7 +875,10 @@ async function startCapture() {
     if (shouldStop) {
       finishMsg = `Stopped (${newlySavedCount} saved)`;
     } else if (newlySavedCount > 0) {
-      finishMsg = `Done (${newlySavedCount} saved)`;
+      finishMsg =
+        pendingQueue.length > 0
+          ? `Done (${newlySavedCount} saved, ${pendingQueue.length} queued)`
+          : `Done (${newlySavedCount} saved)`;
     } else if (alreadySavedCount > 0) {
       finishMsg = `Done (${alreadySavedCount} in Shelf)`;
     } else {
