@@ -52,7 +52,8 @@ async function persistSavedTweetIds(ids: Set<string>): Promise<void> {
 // Helper: broadcast sync progress to popup and storage
 function broadcastSyncProgress(
   status: 'capturing' | 'done' | 'idle' | 'rate_limited' | 'error',
-  statusText?: string
+  statusText?: string,
+  unsavedCount?: number
 ) {
   try {
     const payload = {
@@ -60,6 +61,7 @@ function broadcastSyncProgress(
       isCapturing,
       savedCount: newlySavedCount,
       alreadySavedCount,
+      unsavedCount: unsavedCount || (status === 'done' ? pendingQueue.length : 0),
       status,
       statusText: statusText || (isCapturing ? `Syncing… ${newlySavedCount} saved` : 'Done'),
       isDone: status === 'done',
@@ -646,26 +648,31 @@ function renderWidgetContent(
       if (stopBtn) stopBtn.textContent = 'Stopping...';
     });
   } else if (state === 'done') {
+    const isWarning = Boolean(info?.warning);
+    const bgColor = isWarning ? '#78350F' : '#064E3B';
+    const borderColor = isWarning ? '#D97706' : '#059669';
+    const textColor = isWarning ? '#FEF3C7' : '#ECFDF5';
+    const icon = isWarning ? '⚠' : '✓';
     container.innerHTML = `
       <div style="
         display: flex;
         align-items: center;
         gap: 8px;
-        background: #064E3B;
-        color: #ECFDF5;
+        background: ${bgColor};
+        color: ${textColor};
         padding: 10px 18px;
         border-radius: 9999px;
         box-shadow: 0 4px 16px rgba(0,0,0,0.25);
         font-size: 13px;
         font-weight: 500;
-        border: 1px solid #059669;
+        border: 1px solid ${borderColor};
       ">
-        <span>✓ ${info?.message || 'Done'}</span>
+        <span>${icon} ${info?.message || 'Done'}</span>
       </div>
     `;
     setTimeout(() => {
       if (floatingWidget && !isCapturing) renderWidgetContent(floatingWidget, 'idle');
-    }, 4500);
+    }, isWarning ? 7000 : 4500);
   } else if (state === 'error') {
     container.innerHTML = `
       <div style="
@@ -871,14 +878,21 @@ async function startCapture() {
       shelf_last_sync_count: newlySavedCount,
     });
 
+    const unsavedCount = pendingQueue.length;
     let finishMsg = '';
+    let isWarning = false;
+
     if (shouldStop) {
       finishMsg = `Stopped (${newlySavedCount} saved)`;
+    } else if (unsavedCount > 0) {
+      isWarning = true;
+      if (newlySavedCount > 0) {
+        finishMsg = `Done: ${newlySavedCount} saved (${unsavedCount} failed to save)`;
+      } else {
+        finishMsg = `${unsavedCount} bookmark${unsavedCount === 1 ? '' : 's'} could not be saved`;
+      }
     } else if (newlySavedCount > 0) {
-      finishMsg =
-        pendingQueue.length > 0
-          ? `Done (${newlySavedCount} saved, ${pendingQueue.length} queued)`
-          : `Done (${newlySavedCount} saved)`;
+      finishMsg = `Done (${newlySavedCount} saved)`;
     } else if (alreadySavedCount > 0) {
       finishMsg = `Done (${alreadySavedCount} in Shelf)`;
     } else {
@@ -886,10 +900,13 @@ async function startCapture() {
     }
 
     if (floatingWidget) {
-      renderWidgetContent(floatingWidget, 'done', { message: finishMsg });
+      renderWidgetContent(floatingWidget, 'done', {
+        message: finishMsg,
+        warning: isWarning,
+      });
     }
-    broadcastSyncProgress('done', finishMsg);
-    console.log(`[shelf] Sync finished! Total saved: ${newlySavedCount}, Total existing: ${alreadySavedCount}`);
+    broadcastSyncProgress('done', finishMsg, unsavedCount);
+    console.log(`[shelf] Sync finished! Total saved: ${newlySavedCount}, Total existing: ${alreadySavedCount}, Unsaved: ${unsavedCount}`);
   } catch (err: unknown) {
     console.error('[shelf] Fatal sync error:', err);
     const msg = err instanceof Error ? err.message : 'Sync interrupted';

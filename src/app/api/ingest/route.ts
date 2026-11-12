@@ -219,9 +219,13 @@ export async function POST(request: NextRequest) {
 
     let added = 0;
     if (newRowsToInsert.length > 0) {
+      // Upsert on unique constraint (user_id, tweet_id) with ignoreDuplicates to guarantee no duplicates or race conditions
       const { data: inserted, error: insertError } = await supabase
         .from('bookmarks')
-        .insert(newRowsToInsert)
+        .upsert(newRowsToInsert, {
+          onConflict: 'user_id,tweet_id',
+          ignoreDuplicates: true,
+        })
         .select('id');
 
       if (insertError) {

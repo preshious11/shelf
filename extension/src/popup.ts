@@ -42,12 +42,23 @@ document.addEventListener('DOMContentLoaded', () => {
     const state = data?.shelf_sync_state;
     if (state && state.isCapturing) {
       if (syncProgressCard) syncProgressCard.style.display = 'block';
-      if (syncStatusVal) syncStatusVal.textContent = state.status === 'rate_limited' ? 'Rate limited' : 'Syncing…';
+      if (syncStatusVal) {
+        syncStatusVal.textContent = state.status === 'rate_limited' ? 'Rate limited' : 'Syncing…';
+        syncStatusVal.style.color = state.status === 'rate_limited' ? '#F59E0B' : '#38BDF8';
+      }
       if (syncProgressCount) syncProgressCount.textContent = String(state.savedCount || 0);
       if (stopSyncBtn) stopSyncBtn.style.display = 'flex';
     } else if (state && state.isDone) {
       if (syncProgressCard) syncProgressCard.style.display = 'block';
-      if (syncStatusVal) syncStatusVal.textContent = 'Done';
+      if (syncStatusVal) {
+        if (state.unsavedCount && state.unsavedCount > 0) {
+          syncStatusVal.textContent = `Done (${state.unsavedCount} unsaved)`;
+          syncStatusVal.style.color = '#F59E0B';
+        } else {
+          syncStatusVal.textContent = 'Done';
+          syncStatusVal.style.color = '#10B981';
+        }
+      }
       if (syncProgressCount) syncProgressCount.textContent = String(state.savedCount || 0);
       if (stopSyncBtn) stopSyncBtn.style.display = 'none';
     }
@@ -58,12 +69,23 @@ document.addEventListener('DOMContentLoaded', () => {
     if (msg.type === 'SYNC_PROGRESS') {
       if (msg.isCapturing) {
         if (syncProgressCard) syncProgressCard.style.display = 'block';
-        if (syncStatusVal) syncStatusVal.textContent = msg.status === 'rate_limited' ? 'Rate limited' : 'Syncing…';
+        if (syncStatusVal) {
+          syncStatusVal.textContent = msg.status === 'rate_limited' ? 'Rate limited' : 'Syncing…';
+          syncStatusVal.style.color = msg.status === 'rate_limited' ? '#F59E0B' : '#38BDF8';
+        }
         if (syncProgressCount) syncProgressCount.textContent = String(msg.savedCount || 0);
         if (stopSyncBtn) stopSyncBtn.style.display = 'flex';
       } else if (msg.isDone) {
         if (syncProgressCard) syncProgressCard.style.display = 'block';
-        if (syncStatusVal) syncStatusVal.textContent = 'Done';
+        if (syncStatusVal) {
+          if (msg.unsavedCount && msg.unsavedCount > 0) {
+            syncStatusVal.textContent = `Done (${msg.unsavedCount} unsaved)`;
+            syncStatusVal.style.color = '#F59E0B';
+          } else {
+            syncStatusVal.textContent = 'Done';
+            syncStatusVal.style.color = '#10B981';
+          }
+        }
         if (syncProgressCount) syncProgressCount.textContent = String(msg.savedCount || 0);
         if (stopSyncBtn) stopSyncBtn.style.display = 'none';
       } else if (msg.status === 'idle') {
