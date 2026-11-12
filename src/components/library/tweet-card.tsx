@@ -148,6 +148,11 @@ export function TweetCard({
   const hasLinkPreview = !hasMedia && Boolean(targetLinkUrl);
   const hasVisual = hasMedia || hasLinkPreview;
 
+  const authorHandleClean = bookmark.author_handle?.replace(/^@/, '') || '';
+  const authorProfileUrl = authorHandleClean
+    ? `https://x.com/${authorHandleClean}`
+    : bookmark.tweet_url;
+
   return (
     <article className="group bg-white dark:bg-[#16161A] border border-[#E5E5E3] dark:border-[#26262B] hover:border-[#D4D4D1] dark:hover:border-[#383840] rounded-xl p-4 transition-colors shadow-[0_1px_3px_rgba(0,0,0,0.03)] flex flex-col justify-between h-[390px] w-full overflow-hidden select-text">
       {/* Top Content Area (Scroll-free, fixed bounds) */}
@@ -155,30 +160,46 @@ export function TweetCard({
         {/* Header: Author info & Action buttons */}
         <div className="flex items-start justify-between gap-2.5 mb-2.5 flex-shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
-            {bookmark.author_avatar_url && !avatarError ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={bookmark.author_avatar_url}
-                alt={bookmark.author_name}
-                referrerPolicy="no-referrer"
-                onError={() => setAvatarError(true)}
-                className="w-9 h-9 rounded-full object-cover border border-[#E5E5E3] dark:border-[#26262B] flex-shrink-0"
-              />
-            ) : (
-              <div className="w-9 h-9 rounded-full bg-[#F4F4F3] dark:bg-[#26262B] text-[#71717A] dark:text-[#A1A1AA] flex items-center justify-center font-medium text-xs border border-[#E5E5E3] dark:border-[#26262B] flex-shrink-0">
-                {bookmark.author_name ? bookmark.author_name.charAt(0).toUpperCase() : 'X'}
-              </div>
-            )}
+            {/* Account Profile Image Link */}
+            <a
+              href={authorProfileUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={authorHandleClean ? `@${authorHandleClean} on X` : 'View profile on X'}
+              className="relative block flex-shrink-0 rounded-full group/avatar focus:outline-none"
+            >
+              {bookmark.author_avatar_url && !avatarError ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={bookmark.author_avatar_url}
+                  alt={bookmark.author_name}
+                  referrerPolicy="no-referrer"
+                  onError={() => setAvatarError(true)}
+                  className="w-9 h-9 rounded-full object-cover border border-[#E5E5E3] dark:border-[#26262B] group-hover/avatar:ring-2 group-hover/avatar:ring-sky-500/50 transition-all flex-shrink-0"
+                />
+              ) : (
+                <div className="w-9 h-9 rounded-full bg-[#F4F4F3] dark:bg-[#26262B] text-[#71717A] dark:text-[#A1A1AA] flex items-center justify-center font-medium text-xs border border-[#E5E5E3] dark:border-[#26262B] group-hover/avatar:ring-2 group-hover/avatar:ring-sky-500/50 transition-all flex-shrink-0">
+                  {bookmark.author_name ? bookmark.author_name.charAt(0).toUpperCase() : 'X'}
+                </div>
+              )}
+            </a>
 
             <div className="min-w-0">
-              <div className="flex items-center gap-1.5 truncate">
-                <span className="font-semibold text-xs text-[#18181B] dark:text-[#F4F4F5] truncate">
+              {/* Account Name & Handle Link */}
+              <a
+                href={authorProfileUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={authorHandleClean ? `@${authorHandleClean} on X` : 'View profile on X'}
+                className="group/author flex items-center gap-1.5 truncate focus:outline-none"
+              >
+                <span className="font-semibold text-xs text-[#18181B] dark:text-[#F4F4F5] truncate group-hover/author:text-sky-600 dark:group-hover/author:text-sky-400 transition-colors">
                   {bookmark.author_name || 'Anonymous'}
                 </span>
-                <span className="text-xs text-[#71717A] dark:text-[#A1A1AA] truncate">
-                  @{bookmark.author_handle || 'unknown'}
+                <span className="text-xs text-[#71717A] dark:text-[#A1A1AA] truncate group-hover/author:underline">
+                  @{authorHandleClean || 'unknown'}
                 </span>
-              </div>
+              </a>
               <div className="flex items-center gap-2 text-[11px] text-[#71717A] dark:text-[#A1A1AA]">
                 <span>{formatDate(bookmark.posted_at || bookmark.saved_at)}</span>
                 {bookmark.is_thread && (

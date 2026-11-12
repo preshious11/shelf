@@ -47,6 +47,10 @@ export function TriageView({
   // Keep index in range
   const total = bookmarks.length;
   const currentBookmark = total > 0 ? bookmarks[Math.min(currentIndex, total - 1)] : null;
+  const authorHandleClean = currentBookmark?.author_handle?.replace(/^@/, '') || '';
+  const authorProfileUrl = authorHandleClean
+    ? `https://x.com/${authorHandleClean}`
+    : currentBookmark?.tweet_url || '';
 
   const handleNext = useCallback(() => {
     if (currentIndex < total - 1) {
@@ -224,52 +228,70 @@ export function TriageView({
       {/* Main Focus Card */}
       {currentBookmark && (
         <div className="bg-white dark:bg-[#16161A] border border-[#E5E5E3] dark:border-[#26262B] rounded-2xl p-6 sm:p-8 shadow-sm space-y-6">
-          {/* Author bar */}
-          <div className="flex items-center justify-between pb-4 border-b border-[#E5E5E3]/60 dark:border-[#26262B]/60">
-            <div className="flex items-center gap-3">
-              {currentBookmark.author_avatar_url ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={currentBookmark.author_avatar_url}
-                  alt={currentBookmark.author_name}
-                  className="w-10 h-10 rounded-full object-cover border border-[#E5E5E3] dark:border-[#26262B]"
-                />
-              ) : (
-                <div className="w-10 h-10 rounded-full bg-[#F4F4F3] dark:bg-[#26262B] text-[#71717A] dark:text-[#A1A1AA] flex items-center justify-center font-medium text-xs">
-                  {currentBookmark.author_name?.charAt(0) || 'X'}
-                </div>
-              )}
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-sm text-[#18181B] dark:text-[#F4F4F5]">
-                    {currentBookmark.author_name}
-                  </span>
-                  <span className="text-xs text-[#71717A] dark:text-[#A1A1AA]">
-                    @{currentBookmark.author_handle}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 text-[11px] text-[#71717A] dark:text-[#A1A1AA]">
-                  <span>{formatDate(currentBookmark.posted_at || currentBookmark.saved_at)}</span>
-                  {currentBookmark.is_thread && (
-                    <span className="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 font-medium">
-                      <MessageSquare className="w-2.5 h-2.5" />
-                      <span>Thread</span>
-                    </span>
+            {/* Author bar */}
+            <div className="flex items-center justify-between pb-4 border-b border-[#E5E5E3]/60 dark:border-[#26262B]/60">
+              <div className="flex items-center gap-3">
+                {/* Account Profile Image Link */}
+                <a
+                  href={authorProfileUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={authorHandleClean ? `@${authorHandleClean} on X` : 'View profile on X'}
+                  className="group/avatar block flex-shrink-0 rounded-full focus:outline-none"
+                >
+                  {currentBookmark.author_avatar_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={currentBookmark.author_avatar_url}
+                      alt={currentBookmark.author_name}
+                      referrerPolicy="no-referrer"
+                      className="w-10 h-10 rounded-full object-cover border border-[#E5E5E3] dark:border-[#26262B] group-hover/avatar:ring-2 group-hover/avatar:ring-sky-500/50 transition-all"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-[#F4F4F3] dark:bg-[#26262B] text-[#71717A] dark:text-[#A1A1AA] flex items-center justify-center font-medium text-xs border border-[#E5E5E3] dark:border-[#26262B] group-hover/avatar:ring-2 group-hover/avatar:ring-sky-500/50 transition-all">
+                      {currentBookmark.author_name?.charAt(0) || 'X'}
+                    </div>
                   )}
+                </a>
+
+                <div>
+                  {/* Account Name & Handle Link */}
+                  <a
+                    href={authorProfileUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={authorHandleClean ? `@${authorHandleClean} on X` : 'View profile on X'}
+                    className="group/author flex items-center gap-2 focus:outline-none"
+                  >
+                    <span className="font-semibold text-sm text-[#18181B] dark:text-[#F4F4F5] group-hover/author:text-sky-600 dark:group-hover/author:text-sky-400 transition-colors">
+                      {currentBookmark.author_name}
+                    </span>
+                    <span className="text-xs text-[#71717A] dark:text-[#A1A1AA] group-hover/author:underline">
+                      @{authorHandleClean}
+                    </span>
+                  </a>
+                  <div className="flex items-center gap-2 text-[11px] text-[#71717A] dark:text-[#A1A1AA]">
+                    <span>{formatDate(currentBookmark.posted_at || currentBookmark.saved_at)}</span>
+                    {currentBookmark.is_thread && (
+                      <span className="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 font-medium">
+                        <MessageSquare className="w-2.5 h-2.5" />
+                        <span>Thread</span>
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <a
-              href={currentBookmark.tweet_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-[#71717A] dark:text-[#A1A1AA] hover:text-sky-600 dark:hover:text-sky-400"
-            >
-              <span>x.com</span>
-              <ExternalLink className="w-3.5 h-3.5" />
-            </a>
-          </div>
+              <a
+                href={currentBookmark.tweet_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-[#71717A] dark:text-[#A1A1AA] hover:text-sky-600 dark:hover:text-sky-400"
+              >
+                <span>x.com</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            </div>
 
           {/* Tweet body */}
           <div className="text-base leading-relaxed text-[#18181B] dark:text-[#F4F4F5] whitespace-pre-wrap break-words max-w-reading">

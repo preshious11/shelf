@@ -139,10 +139,18 @@ export function parseBookmarksApiResponse(data: any): ParsedBookmarksPage {
         .replace(/^@/, '')
         .trim();
 
-      const authorAvatar =
+      const rawAvatar =
         legacyUser.profile_image_url_https ||
+        legacyUser.profile_image_url ||
         userResult?.avatar_image_url ||
+        userResult?.avatar?.image_url ||
         undefined;
+
+      // Upgrade default Twitter low-res 48x48 icon (_normal) to crisp high-res icon (_bigger)
+      const authorAvatar =
+        typeof rawAvatar === 'string' && rawAvatar.includes('_normal.')
+          ? rawAvatar.replace('_normal.', '_bigger.')
+          : rawAvatar;
 
       // Full text extraction: prefer note_tweet for long-form posts
       const noteTweetText =
