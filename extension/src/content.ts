@@ -7,7 +7,7 @@ let shouldStop = false;
 let newlySavedCount = 0;
 let alreadySavedCount = 0;
 let savedTweetIds = new Set<string>();
-let seenInSession = new Set<string>();
+let seenThisSession = new Set<string>();
 let pendingQueue: ExtractedTweet[] = [];
 let floatingWidget: HTMLElement | null = null;
 
@@ -379,6 +379,24 @@ function isTwitterLoading(): boolean {
   );
 }
 
+// Helper: wait for Twitter loading spinner to finish (up to 15s), checking shouldStop every tick
+async function waitForTwitterLoadingToFinish(maxWaitMs = 15000): Promise<boolean> {
+  if (!isTwitterLoading()) return true;
+
+  console.log('[shelf] Twitter loading spinner detected. Waiting up to 15s for bookmarks to load...');
+  const start = Date.now();
+
+  while (isTwitterLoading() && Date.now() - start < maxWaitMs) {
+    if (shouldStop) return false;
+    const ok = await sleepInterruptible(500);
+    if (!ok || shouldStop) return false;
+  }
+
+  // Grace period after spinner disappears for new tweet DOM nodes to mount
+  await sleepInterruptible(400);
+  return !shouldStop;
+}
+
 // Helper: check and handle Twitter's "Retry" button after rate limit
 // Follow-up fix: Wait 60-second cooldown FIRST, check shouldStop for early exit, then click Retry, then resume
 async function checkAndHandleRetry(): Promise<boolean> {
@@ -516,9 +534,10 @@ function triggerDeepScroll(): void {
   }
 }
 
-// Helper: wait up to 5 seconds using MutationObserver for new tweets or virtualization DOM updates
+// Helper: wait up to 5 seconds using MutationObserver for ANY newly rendered tweet ID (saved or unsaved)
 function waitForNewTweetsOrMutation(
   previousVisibleIds: Set<string>,
+  seenSessionIds?: Set<string>,
   timeoutMs = 5000
 ): Promise<boolean> {
   return new Promise((resolve) => {
@@ -527,13 +546,21 @@ function waitForNewTweetsOrMutation(
       return;
     }
 
-    // Check if new IDs already mounted
-    const currentIds = getVisibleStatusIds();
-    for (const id of currentIds) {
-      if (!previousVisibleIds.has(id)) {
-        resolve(true);
-        return;
+    const hasNewTweetsRendered = () => {
+      const currentIds = getVisibleStatusIds();
+      for (const id of currentIds) {
+        // Resolves on ANY newly rendered tweet ID, not only unsaved ones
+        if (!previousVisibleIds.has(id) || (seenSessionIds && !seenSessionIds.has(id))) {
+          return true;
+        }
       }
+      return false;
+    };
+
+    // Check if new IDs already mounted
+    if (hasNewTweetsRendered()) {
+      resolve(true);
+      return;
     }
 
     let resolved = false;
@@ -565,13 +592,10 @@ function waitForNewTweetsOrMutation(
         resolve(false);
         return;
       }
-      const nowIds = getVisibleStatusIds();
-      for (const id of nowIds) {
-        if (!previousVisibleIds.has(id)) {
-          cleanup();
-          resolve(true);
-          return;
-        }
+      if (hasNewTweetsRendered()) {
+        cleanup();
+        resolve(true);
+        return;
       }
     };
 
@@ -807,7 +831,7 @@ async function startCapture() {
   newlySavedCount = 0;
   alreadySavedCount = 0;
   pendingQueue = [];
-  seenInSession = new Set<string>();
+  seenThisSession = new Set<string>();
 
   if (floatingWidget) {
     renderWidgetContent(floatingWidget, 'capturing', { newCount: 0, existingCount: 0 });
@@ -857,7 +881,7 @@ async function startCapture() {
   }
 
   let emptyRounds = 0;
-  const MAX_EMPTY_ROUNDS = 8; // Only finish after ~8 consecutive rounds with 0 new tweets
+  const MAX_EMPTY_ROUNDS = 8; // Only finish after ~8 consecutive rounds with 0 new tweets rendered
 
   try {
     while (!shouldStop && emptyRounds < MAX_EMPTY_ROUNDS) {
@@ -871,20 +895,22 @@ async function startCapture() {
 
         if (shouldStop) break;
 
-        // B. Check for active loading spinner (interruptible wait)
+        // B. Check for active loading spinner: wait up to ~15s for it to finish and DO NOT count as empty round!
         if (isTwitterLoading()) {
-          console.log('[shelf] Twitter network loading spinner active, waiting...');
-          const ok = await sleepInterruptible(1200);
-          if (!ok || shouldStop) break;
-          continue;
+          const finishedLoading = await waitForTwitterLoadingToFinish(15000);
+          if (!finishedLoading || shouldStop) break;
+          // Loading spinner was active fetching data: reset emptyRounds so it doesn't count as empty!
+          emptyRounds = 0;
         }
 
         // C. Snapshot visible status IDs before scrolling to detect new renders
         const previousVisibleIds = getVisibleStatusIds();
 
         // D. Scan and extract all visible tweets in DOM
+        // Track every tweet seen in this session (saved or not) in seenThisSession.
+        // A round counts as progress if ANY ID not in seenThisSession appeared!
         const elements = findTweetElements(document);
-        let newDiscoveredInRound = 0;
+        let newlyRenderedInRound = 0;
 
         for (const el of elements) {
           if (shouldStop) break;
@@ -892,33 +918,46 @@ async function startCapture() {
             const tweet = extractTweetFromElement(el);
             if (!tweet || !tweet.tweet_id) continue;
 
+            const isNewToSession = !seenThisSession.has(tweet.tweet_id);
+            if (isNewToSession) {
+              seenThisSession.add(tweet.tweet_id);
+              newlyRenderedInRound++;
+            }
+
             // Check if already in Shelf
             if (savedTweetIds.has(tweet.tweet_id)) {
-              if (!seenInSession.has(tweet.tweet_id)) {
-                seenInSession.add(tweet.tweet_id);
+              if (isNewToSession) {
                 alreadySavedCount++;
+                console.log(
+                  `[shelf] Bookmark ${tweet.tweet_id} by @${tweet.author_handle} is already in Shelf (${alreadySavedCount} existing).`
+                );
               }
               continue;
             }
 
-            // New bookmark found!
-            if (!seenInSession.has(tweet.tweet_id)) {
-              seenInSession.add(tweet.tweet_id);
+            // New unsaved bookmark found! Needs to be queued for ingest
+            if (isNewToSession) {
               pendingQueue.push(tweet);
-              newDiscoveredInRound++;
-              console.log(`[shelf] Found new bookmark: ${tweet.tweet_id} by @${tweet.author_handle}`);
+              console.log(
+                `[shelf] Discovered new unsaved bookmark: ${tweet.tweet_id} by @${tweet.author_handle} (Queue size: ${pendingQueue.length})`
+              );
             }
           } catch (tweetErr) {
             console.error('[shelf] Error extracting tweet element:', tweetErr);
           }
         }
 
-        // E. Update empty rounds counter
-        if (newDiscoveredInRound > 0) {
+        // E. Update empty rounds counter based on whether ANY newly rendered tweets appeared (saved or not)
+        if (newlyRenderedInRound > 0) {
           emptyRounds = 0;
+          console.log(
+            `[shelf] Progress: ${newlyRenderedInRound} newly rendered tweets this round. (Total seen this session: ${seenThisSession.size}, Unsaved queued: ${pendingQueue.length})`
+          );
         } else {
           emptyRounds++;
-          console.log(`[shelf] No new tweets this round. Consecutive empty rounds: ${emptyRounds}/${MAX_EMPTY_ROUNDS}`);
+          console.log(
+            `[shelf] 0 newly rendered tweets this round. Consecutive empty rounds: ${emptyRounds}/${MAX_EMPTY_ROUNDS} (Total seen this session: ${seenThisSession.size}).`
+          );
         }
 
         // F. Update UI with progress
@@ -941,15 +980,25 @@ async function startCapture() {
 
         if (shouldStop) break;
 
-        // H. If consecutive empty round, nudge the lazy loader (scroll up ~600px then bottom)
+        // H. Log scroll position and page height each round to confirm page actually scrolls
+        const scrollY = Math.round(window.scrollY || window.pageYOffset || 0);
+        const scrollHeight = Math.round(
+          Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)
+        );
+        const windowHeight = window.innerHeight;
+        console.log(
+          `[shelf] Scroll state: scrollY=${scrollY}px, scrollHeight=${scrollHeight}px, windowHeight=${windowHeight}px, seenThisSession=${seenThisSession.size}`
+        );
+
+        // I. Scroll page (nudge if consecutive empty rounds, otherwise normal deep scroll)
         if (emptyRounds > 0 && emptyRounds < MAX_EMPTY_ROUNDS) {
           await nudgeLazyLoader();
         } else {
           triggerDeepScroll();
         }
 
-        // I. Wait with MutationObserver for X to render new tweet articles (up to 5s, checks shouldStop every 100ms)
-        await waitForNewTweetsOrMutation(previousVisibleIds, 5000);
+        // J. Wait with MutationObserver for ANY new tweet to render (up to 5s, checks shouldStop every 100ms)
+        await waitForNewTweetsOrMutation(previousVisibleIds, seenThisSession, 5000);
       } catch (iterErr) {
         console.error('[shelf] Loop iteration error:', iterErr);
         // Never exit the loop on error; continue
@@ -987,22 +1036,33 @@ async function startCapture() {
     });
 
     const unsavedCount = pendingQueue.length;
+    const totalSeen = seenThisSession.size;
+
+    // 5. Final summary log: total seen this session, newly saved, already existing, unsaved
+    console.log(
+      `[shelf] Sync finished summary:\n` +
+      `  • Total tweets seen this session: ${totalSeen}\n` +
+      `  • Newly saved: ${newlySavedCount}\n` +
+      `  • Already existing in Shelf: ${alreadySavedCount}\n` +
+      `  • Unsaved (failed batches): ${unsavedCount}`
+    );
+
     let finishMsg = '';
     let isWarning = false;
 
     if (shouldStop) {
-      finishMsg = `Stopped (${newlySavedCount} saved)`;
+      finishMsg = `Stopped (${newlySavedCount} saved, ${totalSeen} seen)`;
     } else if (unsavedCount > 0) {
       isWarning = true;
       if (newlySavedCount > 0) {
-        finishMsg = `Done: ${newlySavedCount} saved (${unsavedCount} failed to save)`;
+        finishMsg = `Done: ${newlySavedCount} saved (${unsavedCount} unsaved, ${totalSeen} seen)`;
       } else {
-        finishMsg = `${unsavedCount} bookmark${unsavedCount === 1 ? '' : 's'} could not be saved`;
+        finishMsg = `${unsavedCount} unsaved (${totalSeen} seen)`;
       }
     } else if (newlySavedCount > 0) {
-      finishMsg = `Done (${newlySavedCount} saved)`;
+      finishMsg = `Done (${newlySavedCount} saved, ${totalSeen} seen)`;
     } else if (alreadySavedCount > 0) {
-      finishMsg = `Done (${alreadySavedCount} in Shelf)`;
+      finishMsg = `Done (${alreadySavedCount} in Shelf, ${totalSeen} seen)`;
     } else {
       finishMsg = isBookmarksOrHistoryPage() ? 'Done (no bookmarks found)' : 'Done';
     }
@@ -1014,7 +1074,7 @@ async function startCapture() {
       });
     }
     broadcastSyncProgress('done', finishMsg, unsavedCount);
-    console.log(`[shelf] Sync finished! Total saved: ${newlySavedCount}, Total existing: ${alreadySavedCount}, Unsaved: ${unsavedCount}`);
+    console.log(`[shelf] Sync finished! Total saved: ${newlySavedCount}, Total existing: ${alreadySavedCount}, Unsaved: ${unsavedCount}, Total seen: ${totalSeen}`);
   } catch (err: unknown) {
     console.error('[shelf] Fatal sync error:', err);
     const msg = err instanceof Error ? err.message : 'Sync interrupted';
