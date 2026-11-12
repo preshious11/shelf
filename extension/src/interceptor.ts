@@ -11,6 +11,11 @@
   (window as any).__shelf_interceptor_installed__ = true;
 
   const BOOKMARKS_GRAPHQL_REGEX = /\/i\/api\/graphql\/[^/]+\/Bookmarks/i;
+  const DELETE_BOOKMARK_REGEX = /\/i\/api\/graphql\/([^/]+)\/DeleteBookmark/i;
+
+  let lastCapturedAuth = '';
+  let lastCapturedCsrf = '';
+  let lastDeleteBookmarkQueryId = 'Wlmlj2-xzyS1GN3a6cj-mQ';
 
   // Helper to extract clean lowercase headers from various header types
   function extractHeaders(input: any): Record<string, string> {
@@ -53,6 +58,26 @@
     }
 
     const isBookmarksApi = BOOKMARKS_GRAPHQL_REGEX.test(url);
+
+    // Capture auth/csrf headers and DeleteBookmark query ID from any X API request
+    if (url.includes('/i/api/')) {
+      try {
+        let reqHeaders: Record<string, string> = {};
+        if (resource instanceof Request) {
+          reqHeaders = extractHeaders(resource.headers);
+        }
+        if (config.headers) {
+          reqHeaders = { ...reqHeaders, ...extractHeaders(config.headers) };
+        }
+        if (reqHeaders['authorization']) lastCapturedAuth = reqHeaders['authorization'];
+        if (reqHeaders['x-csrf-token']) lastCapturedCsrf = reqHeaders['x-csrf-token'];
+
+        const deleteMatch = url.match(DELETE_BOOKMARK_REGEX);
+        if (deleteMatch && deleteMatch[1]) {
+          lastDeleteBookmarkQueryId = deleteMatch[1];
+        }
+      } catch {}
+    }
 
     // Call original fetch without modifying the caller's request
     const response = await originalFetch.apply(this, args);
@@ -132,6 +157,21 @@
 
   XMLHttpRequest.prototype.send = function (body?: any) {
     const url = (this as any).__shelf_url || '';
+
+    // Capture auth/csrf headers and DeleteBookmark query ID from any XHR request
+    if (url.includes('/i/api/')) {
+      try {
+        const xhrHeaders = (this as any).__shelf_headers || {};
+        if (xhrHeaders['authorization']) lastCapturedAuth = xhrHeaders['authorization'];
+        if (xhrHeaders['x-csrf-token']) lastCapturedCsrf = xhrHeaders['x-csrf-token'];
+
+        const deleteMatch = url.match(DELETE_BOOKMARK_REGEX);
+        if (deleteMatch && deleteMatch[1]) {
+          lastDeleteBookmarkQueryId = deleteMatch[1];
+        }
+      } catch {}
+    }
+
     if (BOOKMARKS_GRAPHQL_REGEX.test(url)) {
       this.addEventListener('load', function () {
         try {
@@ -224,6 +264,101 @@
           },
           '*'
         );
+      }
+    }
+  });
+
+  // Helper: dynamically discover live DeleteBookmark queryId from active Webpack module cache
+  function getDeleteBookmarkQueryId(): string {
+    try {
+      const chunk = (window as any).webpackChunk_twitter_responsive_web;
+      if (chunk && Array.isArray(chunk)) {
+        let modules: any = null;
+        chunk.push([
+          ['shelf_extract_' + Date.now()],
+          {},
+          (e: any) => {
+            modules = e.c;
+          },
+        ]);
+        if (modules) {
+          for (const key of Object.keys(modules)) {
+            const mod = modules[key]?.exports;
+            if (mod && typeof mod === 'object') {
+              if (mod.operationName === 'DeleteBookmark' && mod.queryId) {
+                lastDeleteBookmarkQueryId = mod.queryId;
+                return mod.queryId;
+              }
+              if (mod.default?.operationName === 'DeleteBookmark' && mod.default?.queryId) {
+                lastDeleteBookmarkQueryId = mod.default.queryId;
+                return mod.default.queryId;
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore extraction failures
+    }
+    return lastDeleteBookmarkQueryId || 'Wlmlj2-xzyS1GN3a6cj-mQ';
+  }
+
+  // 4. Listen for unbookmark request from isolated content script
+  window.addEventListener('message', async (event) => {
+    if (event.data?.type === 'SHELF_EXECUTE_UNBOOKMARK') {
+      const { tweetId } = event.data;
+      if (!tweetId) return;
+
+      try {
+        const queryId = getDeleteBookmarkQueryId();
+        const url = `https://x.com/i/api/graphql/${queryId}/DeleteBookmark`;
+
+        // Extract CSRF token from document.cookie (ct0) or fallback to lastCapturedCsrf
+        let csrf = '';
+        const cookieMatch = document.cookie.match(/(?:^|;\s*)ct0=([^;]+)/);
+        if (cookieMatch) {
+          csrf = decodeURIComponent(cookieMatch[1]);
+        }
+        if (!csrf) {
+          csrf = lastCapturedCsrf;
+        }
+
+        const auth =
+          lastCapturedAuth ||
+          'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+
+        const headers: Record<string, string> = {
+          authorization: auth,
+          'content-type': 'application/json',
+          'x-twitter-active-user': 'yes',
+          'x-twitter-auth-type': 'OAuth2Session',
+        };
+        if (csrf) {
+          headers['x-csrf-token'] = csrf;
+        }
+
+        const payload = {
+          variables: {
+            tweet_id: String(tweetId),
+          },
+          queryId,
+        };
+
+        const res = await originalFetch(url, {
+          method: 'POST',
+          headers,
+          credentials: 'include',
+          body: JSON.stringify(payload),
+        });
+
+        if (res.ok) {
+          console.log(`[shelf] Successfully unbookmarked tweet ${tweetId} on X via GraphQL mutation.`);
+        } else {
+          const errText = await res.text().catch(() => '');
+          console.warn(`[shelf] DeleteBookmark returned HTTP ${res.status}:`, errText.slice(0, 100));
+        }
+      } catch (err) {
+        console.error('[shelf] Error executing DeleteBookmark in MAIN world:', err);
       }
     }
   });

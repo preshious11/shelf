@@ -1277,6 +1277,55 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       sendResponse({ stopped: true });
       return true;
     }
+
+    if (req.action === 'UNBOOKMARK_TWEET_ON_X') {
+      const tweetId = req.tweetId;
+      if (tweetId) {
+        console.log('[shelf] Received UNBOOKMARK_TWEET_ON_X for tweet:', tweetId);
+        // 1. Remove from local set & storage
+        savedTweetIds.delete(tweetId);
+        persistSavedTweetIds(savedTweetIds);
+
+        // 2. Visually update or remove any matching tweet element currently rendered in DOM
+        try {
+          const matchingLinks = document.querySelectorAll(
+            `article a[href*="/status/${tweetId}"], [data-testid="tweet"] a[href*="/status/${tweetId}"]`
+          );
+          matchingLinks.forEach((el) => {
+            const article = el.closest('article, [data-testid="cellInnerDiv"], div[role="article"]') as HTMLElement | null;
+            if (article) {
+              const removeBtn = article.querySelector(
+                '[data-testid="removeBookmark"], [aria-label*="Remove"][aria-label*="ookmark"], [data-testid="bookmark"]'
+              ) as HTMLElement | null;
+              if (removeBtn) {
+                removeBtn.click();
+              }
+              article.style.transition = 'opacity 0.3s ease, max-height 0.3s ease';
+              article.style.opacity = '0';
+              setTimeout(() => {
+                try {
+                  article.remove();
+                } catch {}
+              }, 300);
+            }
+          });
+        } catch (domErr) {
+          console.warn('[shelf] Error updating DOM for unbookmarked tweet:', domErr);
+        }
+
+        // 3. Delegate to MAIN world to perform GraphQL mutation with session context
+        window.postMessage(
+          {
+            type: 'SHELF_EXECUTE_UNBOOKMARK',
+            tweetId: String(tweetId),
+          },
+          '*'
+        );
+
+        sendResponse({ success: true, tweetId });
+        return true;
+      }
+    }
   } catch (msgErr) {
     console.error('[shelf] Error in content script onMessage listener:', msgErr);
     sendResponse({ error: String(msgErr) });

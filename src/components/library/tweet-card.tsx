@@ -23,7 +23,7 @@ interface TweetCardProps {
   onToggleRead: (id: string, isRead: boolean) => void;
   onUpdateCategory: (id: string, categoryId: string | null) => void;
   onUpdateNote: (id: string, note: string) => void;
-  onDelete: (id: string) => void;
+  onDelete: (id: string, tweetId?: string) => void;
   onSelectTag?: (tagName: string) => void;
 }
 
@@ -224,7 +224,7 @@ export function TweetCard({
             <button
               onClick={() => {
                 if (window.confirm('Delete this bookmark from your library?')) {
-                  onDelete(bookmark.id);
+                  onDelete(bookmark.id, bookmark.tweet_id);
                 }
               }}
               title="Delete bookmark"

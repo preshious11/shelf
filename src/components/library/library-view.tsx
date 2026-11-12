@@ -429,9 +429,27 @@ export function LibraryView({
     await supabase.from('bookmarks').update({ note: note || null }).eq('id', id);
   };
 
-  const handleDeleteBookmark = async (id: string) => {
+  const handleDeleteBookmark = async (id: string, tweetIdParam?: string) => {
+    const target = bookmarks.find((b) => b.id === id);
+    const tweetId = tweetIdParam || target?.tweet_id;
+
     setBookmarks((prev) => prev.filter((b) => b.id !== id));
-    await supabase.from('bookmarks').delete().eq('id', id);
+    try {
+      await supabase.from('bookmarks').delete().eq('id', id);
+    } catch (err) {
+      console.error('[Shelf] Error deleting bookmark from database:', err);
+    }
+
+    // Tell Shelf Chrome Extension to remove the bookmark from X (Twitter)
+    if (tweetId && typeof window !== 'undefined') {
+      window.postMessage(
+        {
+          type: 'SHELF_DELETE_BOOKMARK_ON_X',
+          tweetId: String(tweetId),
+        },
+        '*'
+      );
+    }
   };
 
   // Handlers for Triage Flow

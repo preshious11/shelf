@@ -126,6 +126,103 @@ async function notifyShelfTabs() {
   }
 }
 
+// Unbookmark directly via X GraphQL API if no X tab is currently active
+async function unbookmarkTweetDirectly(tweetId: string): Promise<boolean> {
+  try {
+    let ct0: string | undefined;
+    try {
+      const cookie = await chrome.cookies.get({ url: 'https://x.com', name: 'ct0' });
+      ct0 = cookie?.value;
+    } catch {
+      // Cookies API might fail or not be permitted
+    }
+
+    if (!ct0) {
+      console.log('[shelf background] No ct0 cookie found for x.com (user might not be logged in)');
+      return false;
+    }
+
+    const queryId = 'Wlmlj2-xzyS1GN3a6cj-mQ';
+    const endpoint = `https://x.com/i/api/graphql/${queryId}/DeleteBookmark`;
+    const defaultAuth =
+      'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        authorization: defaultAuth,
+        'x-csrf-token': ct0,
+        'x-twitter-active-user': 'yes',
+        'x-twitter-auth-type': 'OAuth2Session',
+        'content-type': 'application/json',
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        variables: { tweet_id: String(tweetId) },
+        queryId,
+      }),
+    });
+
+    if (res.ok) {
+      console.log(`[shelf background] Direct DeleteBookmark succeeded on X for tweet: ${tweetId}`);
+      return true;
+    } else {
+      const text = await res.text().catch(() => '');
+      console.warn(`[shelf background] Direct DeleteBookmark returned HTTP ${res.status}:`, text.slice(0, 100));
+      return false;
+    }
+  } catch (err) {
+    console.warn('[shelf background] Direct DeleteBookmark failed:', err);
+    return false;
+  }
+}
+
+// Handle unbookmarking a tweet on X when user deletes it in the Shelf web application
+async function handleDeleteBookmarkOnX(tweetId: string): Promise<{ success: boolean; unbookmarkedOnX: boolean }> {
+  console.log('[shelf background] Handling bookmark removal for tweet:', tweetId);
+
+  // 1. Remove from local storage shelf_saved_tweet_ids so it won't be treated as already saved
+  try {
+    chrome.storage.local.get(['shelf_saved_tweet_ids'], (data) => {
+      if (data?.shelf_saved_tweet_ids && Array.isArray(data.shelf_saved_tweet_ids)) {
+        const updated = data.shelf_saved_tweet_ids.filter((id: string) => id !== tweetId);
+        chrome.storage.local.set({ shelf_saved_tweet_ids: updated });
+        console.log(`[shelf background] Removed tweet ${tweetId} from shelf_saved_tweet_ids local storage`);
+      }
+    });
+  } catch (err) {
+    console.warn('[shelf background] Could not update shelf_saved_tweet_ids in storage:', err);
+  }
+
+  // 2. Query open X tabs and message them to unbookmark via authenticated page context
+  let notifiedTabs = false;
+  try {
+    const tabs = await chrome.tabs.query({
+      url: ['https://x.com/*', 'https://twitter.com/*'],
+    });
+
+    for (const tab of tabs) {
+      if (tab.id) {
+        chrome.tabs.sendMessage(tab.id, {
+          action: 'UNBOOKMARK_TWEET_ON_X',
+          tweetId: String(tweetId),
+        }).catch(() => {});
+        notifiedTabs = true;
+      }
+    }
+  } catch (tabErr) {
+    console.warn('[shelf background] Could not query X tabs:', tabErr);
+  }
+
+  // 3. If no X tab was open or to ensure completion, call direct API
+  let directSuccess = false;
+  if (!notifiedTabs) {
+    directSuccess = await unbookmarkTweetDirectly(tweetId);
+  }
+
+  return { success: true, unbookmarkedOnX: notifiedTabs || directSuccess };
+}
+
 // Ingest batch to Shelf web app
 async function sendBatchToShelf(batch: unknown[]): Promise<{ added: number; skipped: number }> {
   const { appUrl, apiToken } = await getStoredSettings();
@@ -212,6 +309,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .catch((err: unknown) => {
           const errorMsg = err instanceof Error ? err.message : 'Failed to delete bookmark';
           console.error('[shelf] Delete error:', errorMsg);
+          sendResponse({ success: false, error: errorMsg });
+        });
+      return true;
+    }
+
+    if (message.type === 'DELETE_BOOKMARK_ON_X') {
+      handleDeleteBookmarkOnX(message.tweetId)
+        .then((result) => {
+          sendResponse(result);
+        })
+        .catch((err: unknown) => {
+          const errorMsg = err instanceof Error ? err.message : 'Failed to unbookmark on X';
+          console.error('[shelf] Error unbookmarking on X:', errorMsg);
           sendResponse({ success: false, error: errorMsg });
         });
       return true;
