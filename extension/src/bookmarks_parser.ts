@@ -171,6 +171,7 @@ export function parseBookmarksApiResponse(data: any): ParsedBookmarksPage {
       const mediaList: {
         type: 'image' | 'video';
         url: string;
+        preview_url?: string;
         alt_text?: string;
       }[] = [];
       const rawMedia =
@@ -187,6 +188,7 @@ export function parseBookmarksApiResponse(data: any): ParsedBookmarksPage {
               mediaList.push({
                 type: 'image',
                 url,
+                preview_url: url,
                 alt_text: m.ext_alt_text || undefined,
               });
             }
@@ -201,10 +203,12 @@ export function parseBookmarksApiResponse(data: any): ParsedBookmarksPage {
 
             const videoUrl =
               mp4s[0]?.url || m.media_url_https || m.media_url;
+            const thumbUrl = m.media_url_https || m.media_url;
             if (videoUrl) {
               mediaList.push({
                 type: 'video',
                 url: videoUrl,
+                preview_url: thumbUrl,
                 alt_text: m.ext_alt_text || undefined,
               });
             }

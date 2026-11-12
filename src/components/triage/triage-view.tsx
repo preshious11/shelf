@@ -13,6 +13,7 @@ import {
   MessageSquare,
   CheckCircle2,
   ListFilter,
+  Play,
 } from 'lucide-react';
 
 interface TriageViewProps {
@@ -281,19 +282,72 @@ export function TriageView({
                 currentBookmark.media.length === 1 ? 'grid-cols-1' : 'grid-cols-2'
               }`}
             >
-              {currentBookmark.media.map((m, idx) => (
-                <div
-                  key={idx}
-                  className="aspect-video bg-[#F4F4F3] dark:bg-[#26262B] rounded-lg overflow-hidden border border-[#E5E5E3] dark:border-[#26262B]"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={m.url}
-                    alt={m.alt_text || 'Media attachment'}
-                    className="w-full h-full object-cover"
-                  />
-                </div>
-              ))}
+              {currentBookmark.media.map((m, idx) => {
+                const isVideo =
+                  m.type === 'video' ||
+                  m.type === 'gif' ||
+                  m.url?.includes('.mp4') ||
+                  m.url?.includes('video.twimg.com') ||
+                  m.url?.includes('/vid/');
+
+                return (
+                  <div
+                    key={idx}
+                    className="aspect-video bg-[#F4F4F3] dark:bg-[#26262B] rounded-lg overflow-hidden border border-[#E5E5E3] dark:border-[#26262B] relative group/media"
+                  >
+                    {isVideo ? (
+                      m.preview_url && !m.preview_url.includes('.mp4') ? (
+                        <a
+                          href={m.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="w-full h-full block relative"
+                          title="Watch video"
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={m.preview_url}
+                            alt={m.alt_text || 'Video thumbnail'}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                          />
+                          <div className="absolute inset-0 bg-black/30 group-hover/media:bg-black/45 transition-colors flex items-center justify-center">
+                            <div className="w-10 h-10 rounded-full bg-black/60 text-white flex items-center justify-center shadow">
+                              <Play className="w-5 h-5 fill-white translate-x-0.5" />
+                            </div>
+                          </div>
+                        </a>
+                      ) : (
+                        <video
+                          src={m.url}
+                          controls
+                          preload="metadata"
+                          playsInline
+                          muted
+                          className="w-full h-full object-cover"
+                        />
+                      )
+                    ) : (
+                      <a
+                        href={m.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full h-full block"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={m.preview_url || m.url}
+                          alt={m.alt_text || 'Media attachment'}
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      </a>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 

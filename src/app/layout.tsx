@@ -17,6 +17,7 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: 'Shelf — Private Library for Bookmarks',
   description: 'A quiet, fast, private library for your X bookmarks.',
+  referrer: 'no-referrer',
 };
 
 export default function RootLayout({
@@ -27,6 +28,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning className={`${plusJakarta.variable} ${jetbrainsMono.variable}`}>
       <head>
+        <meta name="referrer" content="no-referrer" />
         <script
           dangerouslySetInnerHTML={{
             __html: `
