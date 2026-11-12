@@ -18,10 +18,21 @@ async function getStoredSettings(): Promise<{ appUrl: string; apiToken: string }
 }
 
 // Fetch all known tweet_ids already saved in Shelf
-async function fetchKnownBookmarkIds(): Promise<{ success: boolean; knownIds?: string[]; error?: string }> {
+async function fetchKnownBookmarkIds(): Promise<{
+  success: boolean;
+  knownIds?: string[];
+  isAuthError?: boolean;
+  status?: number;
+  error?: string;
+}> {
   const { appUrl, apiToken } = await getStoredSettings();
   if (!apiToken) {
-    return { success: false, error: 'API Token not configured in extension options' };
+    return {
+      success: false,
+      isAuthError: true,
+      status: 401,
+      error: 'Not connected to Shelf. Please reconnect your API token',
+    };
   }
 
   const endpoint = `${appUrl.replace(/\/$/, '')}/api/ingest`;
@@ -34,6 +45,7 @@ async function fetchKnownBookmarkIds(): Promise<{ success: boolean; knownIds?: s
     });
 
     if (!response.ok) {
+      const isAuth = response.status === 401;
       let errorMsg = `HTTP ${response.status}`;
       try {
         const errorText = await response.text();
@@ -42,14 +54,19 @@ async function fetchKnownBookmarkIds(): Promise<{ success: boolean; knownIds?: s
       } catch {
         // Keep fallback
       }
-      return { success: false, error: errorMsg };
+      return {
+        success: false,
+        isAuthError: isAuth,
+        status: response.status,
+        error: isAuth ? 'Not connected to Shelf. Please reconnect your API token' : errorMsg,
+      };
     }
 
     const data = await response.json();
-    return { success: true, knownIds: data.existing_ids || [] };
+    return { success: true, isAuthError: false, knownIds: data.existing_ids || [] };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Network error';
-    return { success: false, error: msg };
+    return { success: false, isAuthError: false, status: 0, error: msg };
   }
 }
 
@@ -114,7 +131,10 @@ async function sendBatchToShelf(batch: unknown[]): Promise<{ added: number; skip
   const { appUrl, apiToken } = await getStoredSettings();
 
   if (!apiToken) {
-    throw new Error('API Token not configured. Please open extension options and add your token.');
+    const err = new Error('Not connected to Shelf. Please reconnect your API token');
+    (err as any).isAuthError = true;
+    (err as any).status = 401;
+    throw err;
   }
 
   const endpoint = `${appUrl.replace(/\/$/, '')}/api/ingest`;
@@ -129,6 +149,7 @@ async function sendBatchToShelf(batch: unknown[]): Promise<{ added: number; skip
   });
 
   if (!response.ok) {
+    const isAuth = response.status === 401;
     const errorText = await response.text();
     let msg = `HTTP ${response.status}`;
     try {
@@ -137,7 +158,12 @@ async function sendBatchToShelf(batch: unknown[]): Promise<{ added: number; skip
     } catch {
       msg = errorText || msg;
     }
-    throw new Error(`Ingest failed: ${msg}`);
+    const err = new Error(
+      isAuth ? 'Not connected to Shelf. Please reconnect your API token' : `Ingest failed: ${msg}`
+    );
+    (err as any).isAuthError = isAuth;
+    (err as any).status = response.status;
+    throw err;
   }
 
   const data = await response.json();
@@ -153,10 +179,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .then((result) => {
           sendResponse({ success: true, ...result });
         })
-        .catch((err: unknown) => {
-          const errorMsg = err instanceof Error ? err.message : 'Unknown ingest error';
+        .catch((err: any) => {
+          const isAuth = Boolean(
+            err?.isAuthError ||
+              err?.status === 401 ||
+              (err?.message &&
+                (err.message.includes('401') ||
+                  err.message.includes('Not connected to Shelf') ||
+                  err.message.includes('API Token not configured')))
+          );
+          const errorMsg = isAuth
+            ? 'Not connected to Shelf. Please reconnect your API token'
+            : err instanceof Error
+            ? err.message
+            : 'Unknown ingest error';
           console.error('[shelf] Ingest error:', errorMsg);
-          sendResponse({ success: false, error: errorMsg });
+          sendResponse({
+            success: false,
+            isAuthError: isAuth,
+            status: isAuth ? 401 : err?.status || 500,
+            error: errorMsg,
+          });
         });
       return true; // Keep message channel open for async response
     }

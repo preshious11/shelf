@@ -91,32 +91,61 @@ function isBookmarksOrHistoryPage(): boolean {
 }
 
 // Helper: fetch existing tweet IDs already saved in Shelf web app database
-async function fetchKnownIdsViaBackground(): Promise<{ success: boolean; ids: Set<string>; error?: string }> {
+async function fetchKnownIdsViaBackground(): Promise<{
+  success: boolean;
+  ids: Set<string>;
+  isAuthError?: boolean;
+  status?: number;
+  error?: string;
+}> {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage({ type: 'GET_KNOWN_IDS' }, (res) => {
       if (chrome.runtime.lastError) {
-        resolve({ success: false, ids: new Set(), error: chrome.runtime.lastError.message });
+        resolve({
+          success: false,
+          isAuthError: false,
+          ids: new Set(),
+          error: chrome.runtime.lastError.message,
+        });
         return;
       }
       if (!res || !res.success) {
+        const isAuth = Boolean(
+          res?.isAuthError ||
+            res?.status === 401 ||
+            (res?.error &&
+              (res.error.includes('Not connected to Shelf') ||
+                res.error.includes('401') ||
+                res.error.includes('API Token not configured')))
+        );
         resolve({
           success: false,
+          isAuthError: isAuth,
+          status: res?.status || (isAuth ? 401 : 500),
           ids: new Set(),
           error: res?.error || 'Failed to connect to Shelf web app',
         });
         return;
       }
       const ids = new Set<string>((res.knownIds || []).map((id: any) => String(id)));
-      resolve({ success: true, ids });
+      resolve({ success: true, isAuthError: false, ids });
     });
   });
 }
 
+// Result interface for batch ingestion
+interface SendBatchResult {
+  success: boolean;
+  added?: number;
+  skipped?: number;
+  isAuthError?: boolean;
+  status?: number;
+  error?: string;
+}
+
 // Helper: send batch of tweets to background service worker for ingestion
-async function sendBatchViaBackground(
-  batch: ExtractedTweet[]
-): Promise<{ added: number; skipped: number }> {
-  return new Promise((resolve, reject) => {
+async function sendBatchViaBackground(batch: ExtractedTweet[]): Promise<SendBatchResult> {
+  return new Promise((resolve) => {
     chrome.runtime.sendMessage(
       {
         type: 'INGEST_BATCH',
@@ -124,14 +153,36 @@ async function sendBatchViaBackground(
       },
       (response) => {
         if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
+          resolve({
+            success: false,
+            isAuthError: false,
+            error: chrome.runtime.lastError.message,
+          });
           return;
         }
         if (!response || !response.success) {
-          reject(new Error(response?.error || 'Ingest failed via background worker'));
+          const isAuth = Boolean(
+            response?.isAuthError ||
+              response?.status === 401 ||
+              (response?.error &&
+                (response.error.includes('Not connected to Shelf') ||
+                  response.error.includes('401') ||
+                  response.error.includes('API Token not configured')))
+          );
+          resolve({
+            success: false,
+            isAuthError: isAuth,
+            status: response?.status || (isAuth ? 401 : 500),
+            error: response?.error || 'Ingest failed via background worker',
+          });
           return;
         }
-        resolve({ added: response.added || 0, skipped: response.skipped || 0 });
+        resolve({
+          success: true,
+          isAuthError: false,
+          added: response.added || 0,
+          skipped: response.skipped || 0,
+        });
       }
     );
   });
@@ -149,46 +200,60 @@ async function sleepInterruptible(ms: number, stepMs = 100): Promise<boolean> {
 }
 
 // Helper: send batch with retry and exponential backoff (up to 5 attempts)
-async function sendBatchWithRetry(batch: ExtractedTweet[], maxAttempts = 5): Promise<boolean> {
+// 401 auth failures abort immediately without retry. Network errors and 5xx responses retry with backoff.
+async function sendBatchWithRetry(
+  batch: ExtractedTweet[],
+  maxAttempts = 5
+): Promise<{ success: boolean; isAuthError?: boolean; error?: string }> {
   let attempt = 0;
   let delayMs = 1000;
 
   while (attempt < maxAttempts) {
-    if (shouldStop) return false;
+    if (shouldStop) return { success: false };
     attempt++;
-    try {
-      console.log(`[shelf] Ingesting batch of ${batch.length} tweets (attempt ${attempt}/${maxAttempts})...`);
-      const res = await sendBatchViaBackground(batch);
+
+    console.log(`[shelf] Ingesting batch of ${batch.length} tweets (attempt ${attempt}/${maxAttempts})...`);
+    const res = await sendBatchViaBackground(batch);
+
+    if (res.success) {
       console.log('[shelf] Ingest response:', res);
-      return true;
-    } catch (err: unknown) {
-      if (shouldStop) return false;
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[shelf] Batch attempt ${attempt}/${maxAttempts} failed:`, msg);
-
-      if (attempt >= maxAttempts) {
-        console.error('[shelf] Batch failed all 5 attempts. Keeping in queue for next round.');
-        return false;
-      }
-
-      // Exponential backoff: 1s, 2s, 4s, 8s, 16s + jitter
-      const jitter = Math.floor(Math.random() * 500);
-      const waitTime = delayMs + jitter;
-      console.log(`[shelf] Retrying batch in ${waitTime}ms...`);
-
-      const ok = await sleepInterruptible(waitTime);
-      if (!ok || shouldStop) {
-        console.log('[shelf] Batch backoff cancelled due to stop request.');
-        return false;
-      }
-      delayMs *= 2;
+      return { success: true };
     }
+
+    // 1. IF 401 AUTH ERROR: DO NOT RETRY WITH BACKOFF!
+    if (res.isAuthError) {
+      console.error('[shelf] Auth error (401) on batch ingest. Aborting immediately without retry.');
+      return { success: false, isAuthError: true, error: res.error };
+    }
+
+    if (shouldStop) return { success: false };
+
+    // 2. Network errors and 5xx responses: Log and retry with exponential backoff
+    console.error(`[shelf] Batch attempt ${attempt}/${maxAttempts} failed (server/network):`, res.error);
+
+    if (attempt >= maxAttempts) {
+      console.error('[shelf] Batch failed all 5 attempts. Keeping in queue for next round.');
+      return { success: false, error: res.error };
+    }
+
+    // Exponential backoff: 1s, 2s, 4s, 8s, 16s + jitter
+    const jitter = Math.floor(Math.random() * 500);
+    const waitTime = delayMs + jitter;
+    console.log(`[shelf] Retrying batch in ${waitTime}ms...`);
+
+    const ok = await sleepInterruptible(waitTime);
+    if (!ok || shouldStop) {
+      console.log('[shelf] Batch backoff cancelled due to stop request.');
+      return { success: false };
+    }
+    delayMs *= 2;
   }
-  return false;
+
+  return { success: false };
 }
 
 // Helper: process pending queue in batches of ~20
-async function processPendingQueue(forceFlushAll = false): Promise<void> {
+async function processPendingQueue(forceFlushAll = false): Promise<{ authError?: boolean }> {
   const BATCH_SIZE = 20;
 
   while (pendingQueue.length >= BATCH_SIZE || (forceFlushAll && pendingQueue.length > 0)) {
@@ -197,11 +262,25 @@ async function processPendingQueue(forceFlushAll = false): Promise<void> {
     const countToSend = Math.min(BATCH_SIZE, pendingQueue.length);
     const batch = pendingQueue.slice(0, countToSend);
 
-    const success = await sendBatchWithRetry(batch, 5);
-    if (success) {
+    const result = await sendBatchWithRetry(batch, 5);
+
+    if (result.isAuthError) {
+      // Auth error mid-sync:
+      // Stop the sync immediately, keep pending tweets unsaved, and show reconnect message.
+      console.error('[shelf] Auth error (401) mid-sync. Halting queue processing immediately.');
+      const authMsg = 'Not connected to Shelf. Please reconnect your API token';
+      shouldStop = true;
+      if (floatingWidget) {
+        renderWidgetContent(floatingWidget, 'error', { message: authMsg });
+      }
+      broadcastSyncProgress('error', authMsg);
+      return { authError: true };
+    }
+
+    if (result.success) {
       // Remove successfully ingested batch from queue
       pendingQueue.splice(0, countToSend);
-      // Mark as saved
+      // Mark as saved ONLY after server confirmation
       batch.forEach((t) => savedTweetIds.add(t.tweet_id));
       newlySavedCount += countToSend;
       await persistSavedTweetIds(savedTweetIds);
@@ -214,11 +293,14 @@ async function processPendingQueue(forceFlushAll = false): Promise<void> {
         });
       }
     } else {
+      // Network or 5xx error:
       // Keep tweets in queue for next round; do not drop or exit loop
       console.warn(`[shelf] ${pendingQueue.length} tweets remain queued for next round.`);
       break;
     }
   }
+
+  return { authError: false };
 }
 
 // Helper: find all candidate tweet elements in DOM
@@ -739,6 +821,21 @@ async function startCapture() {
   console.log(`[shelf] Loaded ${localSavedIds.size} saved IDs from local storage cache.`);
 
   const backendCheck = await fetchKnownIdsViaBackground();
+
+  // If GET /api/ingest returns 401 at the start of a sync, don't start scrolling.
+  // Show "Not connected to Shelf. Please reconnect your API token" in the widget and popup, and stop.
+  if (backendCheck.isAuthError) {
+    console.error('[shelf] Auth failure connecting to Shelf (401). Aborting sync before scrolling.');
+    const authMsg = 'Not connected to Shelf. Please reconnect your API token';
+    if (floatingWidget) {
+      renderWidgetContent(floatingWidget, 'error', { message: authMsg });
+    }
+    broadcastSyncProgress('error', authMsg);
+    isCapturing = false;
+    shouldStop = false;
+    return;
+  }
+
   if (backendCheck.success && backendCheck.ids) {
     // SERVER'S KNOWN IDS IS THE SOURCE OF TRUTH:
     // If a user deleted a tweet in the Shelf web app, it will NOT be in backendCheck.ids.
@@ -749,7 +846,7 @@ async function startCapture() {
     await persistSavedTweetIds(savedTweetIds);
     console.log(`[shelf] Synchronized with Shelf server: ${savedTweetIds.size} active saved IDs.`);
   } else {
-    // Fallback if backend is unreachable (e.g., offline or network error):
+    // Fallback if backend is unreachable (e.g., network error or 5xx):
     // Use local storage cache so sync can still proceed without duplicates.
     console.warn(
       '[shelf] Could not reach Shelf server to fetch known IDs (' +
@@ -834,7 +931,13 @@ async function startCapture() {
         broadcastSyncProgress('capturing');
 
         // G. Process pending queue in batches of ~20 with retry
-        await processPendingQueue(false);
+        const queueRes = await processPendingQueue(false);
+        if (queueRes.authError) {
+          console.error('[shelf] Sync stopped due to auth error (401).');
+          isCapturing = false;
+          shouldStop = false;
+          return;
+        }
 
         if (shouldStop) break;
 
@@ -866,7 +969,12 @@ async function startCapture() {
       broadcastSyncProgress('capturing', `Saving final ${pendingQueue.length} bookmarks...`);
 
       try {
-        await processPendingQueue(true); // forceFlushAll = true with 5-attempt exponential backoff retry
+        const flushRes = await processPendingQueue(true); // forceFlushAll = true with 5-attempt exponential backoff retry
+        if (flushRes.authError) {
+          isCapturing = false;
+          shouldStop = false;
+          return;
+        }
       } catch (flushErr) {
         console.error('[shelf] Error in final queue flush:', flushErr);
       }

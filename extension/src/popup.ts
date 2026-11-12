@@ -61,6 +61,14 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       if (syncProgressCount) syncProgressCount.textContent = String(state.savedCount || 0);
       if (stopSyncBtn) stopSyncBtn.style.display = 'none';
+    } else if (state && state.status === 'error') {
+      if (syncProgressCard) syncProgressCard.style.display = 'block';
+      if (syncStatusVal) {
+        syncStatusVal.textContent = state.statusText || 'Error';
+        syncStatusVal.style.color = '#EF4444';
+      }
+      if (syncProgressCount) syncProgressCount.textContent = 'Not connected';
+      if (stopSyncBtn) stopSyncBtn.style.display = 'none';
     }
   });
 
@@ -87,6 +95,14 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         }
         if (syncProgressCount) syncProgressCount.textContent = String(msg.savedCount || 0);
+        if (stopSyncBtn) stopSyncBtn.style.display = 'none';
+      } else if (msg.status === 'error') {
+        if (syncProgressCard) syncProgressCard.style.display = 'block';
+        if (syncStatusVal) {
+          syncStatusVal.textContent = msg.statusText || 'Error';
+          syncStatusVal.style.color = '#EF4444';
+        }
+        if (syncProgressCount) syncProgressCount.textContent = 'Not connected';
         if (stopSyncBtn) stopSyncBtn.style.display = 'none';
       } else if (msg.status === 'idle') {
         if (syncProgressCard) syncProgressCard.style.display = 'none';
