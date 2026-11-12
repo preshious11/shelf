@@ -37,6 +37,8 @@ export interface TweetLink {
   display_url: string;
   title?: string;
   description?: string;
+  thumbnail_url?: string;
+  domain?: string;
 }
 
 export interface Bookmark {

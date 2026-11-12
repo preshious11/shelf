@@ -221,6 +221,10 @@ export function parseBookmarksApiResponse(data: any): ParsedBookmarksPage {
         url: string;
         expanded_url: string;
         display_url: string;
+        title?: string;
+        description?: string;
+        thumbnail_url?: string;
+        domain?: string;
       }[] = [];
       const rawUrls = tweetObj.legacy?.entities?.urls || [];
       if (Array.isArray(rawUrls)) {
@@ -233,6 +237,98 @@ export function parseBookmarksApiResponse(data: any): ParsedBookmarksPage {
             });
           }
         }
+      }
+
+      // Card / Link thumbnail extraction from X's card object (summary, summary_large_image, player, promo)
+      let cardThumbnailUrl: string | undefined = undefined;
+      let cardTitle: string | undefined = undefined;
+      let cardDescription: string | undefined = undefined;
+      let cardDomain: string | undefined = undefined;
+      let cardUrl: string | undefined = undefined;
+
+      const rawCard = tweetObj.card || tweetObj.unified_card;
+      if (rawCard) {
+        const bindingValues =
+          rawCard.legacy?.binding_values ||
+          rawCard.binding_values ||
+          [];
+
+        const bindingsMap: Record<string, any> = {};
+        if (Array.isArray(bindingValues)) {
+          for (const bv of bindingValues) {
+            if (bv && bv.key) {
+              bindingsMap[bv.key] = bv.value;
+            }
+          }
+        } else if (typeof bindingValues === 'object') {
+          Object.assign(bindingsMap, bindingValues);
+        }
+
+        const imgKeys = [
+          'photo_image_full_size_large',
+          'thumbnail_image_original',
+          'thumbnail_image',
+          'thumbnail_image_large',
+          'card_image',
+          'summary_photo_image',
+          'player_image_large',
+          'promo_image',
+        ];
+
+        for (const k of imgKeys) {
+          const val = bindingsMap[k];
+          const imgUrl =
+            val?.image_value?.url ||
+            val?.string_value ||
+            (typeof val === 'string' && val.startsWith('http') ? val : undefined);
+          if (imgUrl) {
+            cardThumbnailUrl = imgUrl;
+            break;
+          }
+        }
+
+        if (bindingsMap.title?.string_value) {
+          cardTitle = bindingsMap.title.string_value;
+        }
+        if (bindingsMap.description?.string_value) {
+          cardDescription = bindingsMap.description.string_value;
+        }
+        if (bindingsMap.domain?.string_value) {
+          cardDomain = bindingsMap.domain.string_value;
+        } else if (bindingsMap.vanity_url?.string_value) {
+          cardDomain = bindingsMap.vanity_url.string_value;
+        }
+        if (bindingsMap.card_url?.string_value) {
+          cardUrl = bindingsMap.card_url.string_value;
+        }
+      }
+
+      // If card has an image and mediaList is empty, add it to mediaList so it immediately renders
+      if (cardThumbnailUrl && mediaList.length === 0) {
+        mediaList.push({
+          type: 'image',
+          url: cardThumbnailUrl,
+          preview_url: cardThumbnailUrl,
+          alt_text: cardTitle || 'Link preview',
+        });
+      }
+
+      // Attach card metadata to linksList[0]
+      if (linksList.length > 0) {
+        if (cardThumbnailUrl) linksList[0].thumbnail_url = cardThumbnailUrl;
+        if (cardTitle) linksList[0].title = cardTitle;
+        if (cardDescription) linksList[0].description = cardDescription;
+        if (cardDomain) linksList[0].domain = cardDomain;
+      } else if (cardUrl || cardThumbnailUrl) {
+        linksList.push({
+          url: cardUrl || '',
+          expanded_url: cardUrl || '',
+          display_url: cardDomain || 'link',
+          title: cardTitle,
+          description: cardDescription,
+          thumbnail_url: cardThumbnailUrl,
+          domain: cardDomain,
+        });
       }
 
       // Thread detection

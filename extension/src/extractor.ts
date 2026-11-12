@@ -18,6 +18,9 @@ export interface ExtractedTweet {
     expanded_url: string;
     display_url: string;
     title?: string;
+    description?: string;
+    thumbnail_url?: string;
+    domain?: string;
   }>;
   is_thread: boolean;
 }

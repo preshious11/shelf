@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { Bookmark, Category } from '@/types/database';
 import { formatDate } from '@/lib/utils';
+import { LinkThumbnail } from '../library/link-thumbnail';
 import {
   Sparkles,
   ArrowLeft,
@@ -275,8 +276,8 @@ export function TriageView({
             {currentBookmark.text}
           </div>
 
-          {/* Media previews */}
-          {Array.isArray(currentBookmark.media) && currentBookmark.media.length > 0 && (
+          {/* Media previews or Link Thumbnail Preview */}
+          {Array.isArray(currentBookmark.media) && currentBookmark.media.length > 0 ? (
             <div
               className={`grid gap-2 rounded-xl overflow-hidden ${
                 currentBookmark.media.length === 1 ? 'grid-cols-1' : 'grid-cols-2'
@@ -349,7 +350,24 @@ export function TriageView({
                 );
               })}
             </div>
-          )}
+          ) : (() => {
+            const primaryLink =
+              Array.isArray(currentBookmark.links) && currentBookmark.links.length > 0
+                ? currentBookmark.links[0]
+                : null;
+            const targetUrl =
+              primaryLink?.expanded_url ||
+              primaryLink?.url ||
+              currentBookmark.text?.match(/https?:\/\/[^\s]+/i)?.[0];
+
+            if (!targetUrl) return null;
+
+            return (
+              <div className="rounded-xl overflow-hidden">
+                <LinkThumbnail link={primaryLink} url={targetUrl} variant="triage" />
+              </div>
+            );
+          })()}
 
           {/* Gemini AI Suggestion Box */}
           {suggestedCat ? (

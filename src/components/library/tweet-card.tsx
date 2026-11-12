@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import type { Bookmark, Category, TweetMedia } from '@/types/database';
 import { formatDate } from '@/lib/utils';
+import { LinkThumbnail } from './link-thumbnail';
 import {
   Pin,
   Circle,
@@ -14,6 +15,7 @@ import {
   ChevronDown,
   Sparkles,
   Play,
+  Globe,
 } from 'lucide-react';
 
 interface TweetCardProps {
@@ -135,6 +137,16 @@ export function TweetCard({
   };
 
   const hasMedia = Array.isArray(bookmark.media) && bookmark.media.length > 0;
+  const primaryLink =
+    Array.isArray(bookmark.links) && bookmark.links.length > 0
+      ? bookmark.links[0]
+      : null;
+  const rawExtractedUrl = !primaryLink
+    ? bookmark.text?.match(/https?:\/\/[^\s]+/i)?.[0]
+    : null;
+  const targetLinkUrl = primaryLink?.expanded_url || primaryLink?.url || rawExtractedUrl;
+  const hasLinkPreview = !hasMedia && Boolean(targetLinkUrl);
+  const hasVisual = hasMedia || hasLinkPreview;
 
   return (
     <article className="group bg-white dark:bg-[#16161A] border border-[#E5E5E3] dark:border-[#26262B] hover:border-[#D4D4D1] dark:hover:border-[#383840] rounded-xl p-4 transition-colors shadow-[0_1px_3px_rgba(0,0,0,0.03)] flex flex-col justify-between h-[390px] w-full overflow-hidden select-text">
@@ -239,20 +251,20 @@ export function TweetCard({
         <div
           title={bookmark.text}
           className={`text-sm leading-relaxed text-[#18181B] dark:text-[#F4F4F5] break-words font-normal ${
-            hasMedia ? 'line-clamp-2 md:line-clamp-3' : 'line-clamp-6'
+            hasVisual ? 'line-clamp-2 md:line-clamp-3' : 'line-clamp-6'
           }`}
           style={{
             display: '-webkit-box',
             WebkitBoxOrient: 'vertical',
-            WebkitLineClamp: hasMedia ? 3 : 6,
+            WebkitLineClamp: hasVisual ? 3 : 6,
             overflow: 'hidden',
           }}
         >
           {bookmark.text}
         </div>
 
-        {/* Media Attachments Preview (Fixed container size) */}
-        {hasMedia && (
+        {/* Visual Preview: Native Media or Link Thumbnail (Fixed 150px container size) */}
+        {hasMedia ? (
           <div className="h-[150px] w-full rounded-lg overflow-hidden border border-[#E5E5E3] dark:border-[#26262B] flex-shrink-0 mt-2 bg-[#F4F4F3] dark:bg-[#26262B]">
             {bookmark.media.length === 1 ? (
               <MediaAttachment media={bookmark.media[0]} />
@@ -276,10 +288,17 @@ export function TweetCard({
               </div>
             )}
           </div>
-        )}
+        ) : hasLinkPreview && targetLinkUrl ? (
+          <LinkThumbnail
+            link={primaryLink}
+            url={targetLinkUrl}
+            bookmarkId={bookmark.id}
+            variant="card"
+          />
+        ) : null}
 
-        {/* Embedded External Links (Compact single line) */}
-        {Array.isArray(bookmark.links) && bookmark.links.length > 0 && (
+        {/* Embedded External Links (Compact single line if media present or multiple links) */}
+        {hasMedia && Array.isArray(bookmark.links) && bookmark.links.length > 0 && (
           <div className="mt-1.5 flex items-center gap-1.5 max-w-full flex-shrink-0">
             <a
               href={bookmark.links[0].expanded_url || bookmark.links[0].url}
@@ -296,6 +315,13 @@ export function TweetCard({
                 +{bookmark.links.length - 1}
               </span>
             )}
+          </div>
+        )}
+
+        {/* Additional links indicator if link preview is shown and there are multiple links */}
+        {hasLinkPreview && bookmark.links && bookmark.links.length > 1 && (
+          <div className="mt-1 flex items-center gap-1 text-[10px] text-[#71717A] dark:text-[#A1A1AA] flex-shrink-0">
+            <span>+{bookmark.links.length - 1} more link{bookmark.links.length > 2 ? 's' : ''}</span>
           </div>
         )}
 
