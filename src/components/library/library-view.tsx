@@ -12,6 +12,7 @@ import { TriageView } from '@/components/triage/triage-view';
 import { CategoryModal } from '@/components/library/category-modal';
 import { ImportModal } from '@/components/library/import-modal';
 import { CommandPalette } from '@/components/palette/command-palette';
+import { useTheme } from '@/components/theme-provider';
 import { Menu, X, Sparkles, LayoutList, SplitSquareVertical } from 'lucide-react';
 
 interface LibraryViewProps {
@@ -50,6 +51,7 @@ export function LibraryView({
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
   // UI Modals & modes
+  const { setTheme, toggleTheme } = useTheme();
   const [triageMode, setTriageMode] = useState(false);
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
   const [categoryToEdit, setCategoryToEdit] = useState<Category | null>(null);
@@ -76,9 +78,9 @@ export function LibraryView({
         setIsPaletteOpen(true);
       }
       if (params.get('theme') === 'dark') {
-        document.documentElement.classList.add('dark');
+        setTheme('dark');
       } else if (params.get('theme') === 'light') {
-        document.documentElement.classList.remove('dark');
+        setTheme('light');
       }
     }
   }, []);
@@ -989,10 +991,7 @@ export function LibraryView({
         onExportData={handleExportData}
         onOpenImport={() => setIsImportModalOpen(true)}
         onOpenSettings={() => router.push('/settings')}
-        onToggleTheme={() => {
-          const isDark = document.documentElement.classList.toggle('dark');
-          localStorage.setItem('shelf_theme', isDark ? 'dark' : 'light');
-        }}
+        onToggleTheme={toggleTheme}
       />
     </div>
   );

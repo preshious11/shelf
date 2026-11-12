@@ -8,6 +8,7 @@ import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { formatDate } from '@/lib/utils';
 import type { ApiToken, Category, Bookmark, Tag } from '@/types/database';
+import { useTheme } from '@/components/theme-provider';
 import {
   ArrowLeft,
   Key,
@@ -20,12 +21,16 @@ import {
   LogOut,
   AlertCircle,
   ShieldCheck,
+  Sun,
+  Moon,
+  Laptop,
 } from 'lucide-react';
 import { ImportModal } from '@/components/library/import-modal';
 
 export default function SettingsPage() {
   const router = useRouter();
   const supabase = createClient();
+  const { theme, setTheme } = useTheme();
 
   const [userEmail, setUserEmail] = useState<string>('');
   const [userId, setUserId] = useState<string>('');
@@ -376,7 +381,58 @@ export default function SettingsPage() {
           </div>
         </section>
 
-        {/* Section 3: Account & Session */}
+        {/* Section 3: Appearance / Theme */}
+        <section className="bg-white dark:bg-[#16161A] border border-[#E5E5E3] dark:border-[#26262B] rounded-xl p-6 shadow-sm space-y-4">
+          <div className="flex items-center gap-2">
+            <Sun className="w-4 h-4 text-sky-600 dark:text-sky-400" />
+            <h2 className="text-sm font-semibold text-[#18181B] dark:text-[#F4F4F5]">
+              Appearance
+            </h2>
+          </div>
+          <p className="text-xs text-[#71717A] dark:text-[#A1A1AA]">
+            Choose how Shelf looks. By default, it automatically matches your browser and system preference.
+          </p>
+
+          <div className="grid grid-cols-3 gap-2.5 max-w-sm pt-1">
+            <button
+              onClick={() => setTheme('system')}
+              className={`flex items-center justify-center gap-2 p-2.5 rounded-lg border text-xs font-medium transition-all ${
+                theme === 'system'
+                  ? 'border-sky-500 bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 shadow-xs'
+                  : 'border-[#E5E5E3] dark:border-[#26262B] bg-[#FBFBFA] dark:bg-[#121215] text-[#71717A] dark:text-[#A1A1AA] hover:border-stone-400'
+              }`}
+            >
+              <Laptop className="w-4 h-4" />
+              <span>System</span>
+            </button>
+
+            <button
+              onClick={() => setTheme('light')}
+              className={`flex items-center justify-center gap-2 p-2.5 rounded-lg border text-xs font-medium transition-all ${
+                theme === 'light'
+                  ? 'border-sky-500 bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 shadow-xs'
+                  : 'border-[#E5E5E3] dark:border-[#26262B] bg-[#FBFBFA] dark:bg-[#121215] text-[#71717A] dark:text-[#A1A1AA] hover:border-stone-400'
+              }`}
+            >
+              <Sun className="w-4 h-4" />
+              <span>Light</span>
+            </button>
+
+            <button
+              onClick={() => setTheme('dark')}
+              className={`flex items-center justify-center gap-2 p-2.5 rounded-lg border text-xs font-medium transition-all ${
+                theme === 'dark'
+                  ? 'border-sky-500 bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 shadow-xs'
+                  : 'border-[#E5E5E3] dark:border-[#26262B] bg-[#FBFBFA] dark:bg-[#121215] text-[#71717A] dark:text-[#A1A1AA] hover:border-stone-400'
+              }`}
+            >
+              <Moon className="w-4 h-4" />
+              <span>Dark</span>
+            </button>
+          </div>
+        </section>
+
+        {/* Section 4: Account & Session */}
         <section className="bg-white dark:bg-[#16161A] border border-[#E5E5E3] dark:border-[#26262B] rounded-xl p-6 shadow-sm flex items-center justify-between">
           <div>
             <div className="text-sm font-semibold text-[#18181B] dark:text-[#F4F4F5]">
