@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import { headers } from 'next/headers';
 import { createClient } from '@/lib/supabase/server';
 import { LibraryView } from '@/components/library/library-view';
 import type { Bookmark, Category, Tag } from '@/types/database';
@@ -127,11 +128,21 @@ export default async function HomePage({
   const params = await searchParams;
   const isDemo = params?.demo === '1' || params?.preview === '1';
 
+  const headerList = await headers();
+  const headerUserId = headerList.get('x-user-id');
+  const headerUserEmail = headerList.get('x-user-email');
+
   const supabase = await createClient();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user: { id: string; email?: string } | null = null;
+  if (headerUserId) {
+    user = { id: headerUserId, email: headerUserEmail || undefined };
+  } else {
+    const {
+      data: { user: authUser },
+    } = await supabase.auth.getUser();
+    user = authUser;
+  }
 
   if (!user && !isDemo) {
     redirect('/login');

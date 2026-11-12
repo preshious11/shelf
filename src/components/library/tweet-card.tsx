@@ -174,6 +174,7 @@ export function TweetCard({
                   src={bookmark.author_avatar_url}
                   alt={bookmark.author_name}
                   referrerPolicy="no-referrer"
+                  loading="lazy"
                   onError={() => setAvatarError(true)}
                   className="w-9 h-9 rounded-full object-cover border border-[#E5E5E3] dark:border-[#26262B] group-hover/avatar:ring-2 group-hover/avatar:ring-sky-500/50 transition-all flex-shrink-0"
                 />

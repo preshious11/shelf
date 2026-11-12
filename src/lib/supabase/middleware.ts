@@ -59,5 +59,25 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  return supabaseResponse;
+  // Inject authenticated user ID into request headers to avoid duplicate getUser() roundtrips in Server Components
+  const requestHeaders = new Headers(request.headers);
+  if (user) {
+    requestHeaders.set('x-user-id', user.id);
+    if (user.email) {
+      requestHeaders.set('x-user-email', user.email);
+    }
+  }
+
+  const finalResponse = NextResponse.next({
+    request: {
+      headers: requestHeaders,
+    },
+  });
+
+  // Preserve any cookies set by Supabase during session refresh
+  supabaseResponse.cookies.getAll().forEach((cookie) => {
+    finalResponse.cookies.set(cookie.name, cookie.value, cookie);
+  });
+
+  return finalResponse;
 }

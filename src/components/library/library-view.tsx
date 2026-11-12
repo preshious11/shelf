@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useTransition, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useTransition, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Bookmark, Category, Tag } from '@/types/database';
 import { createClient } from '@/lib/supabase/client';
@@ -49,6 +49,17 @@ export function LibraryView({
   const [pinnedFilter, setPinnedFilter] = useState(false);
   const [sortOption, setSortOption] = useState<SortOption>('saved_desc');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+
+  // Progressive windowing (24 cards per slice) to keep initial DOM size lightweight (<1400 nodes)
+  const [visibleCount, setVisibleCount] = useState(24);
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep bookmarks ref updated for heartbeat without triggering effect rebuilds
+  const bookmarksRef = useRef(bookmarks);
+  bookmarksRef.current = bookmarks;
+
+  // Mount timestamp to ignore spurious focus events during initial hydration
+  const mountTimeRef = useRef(Date.now());
 
   // UI Modals & modes
   const { setTheme, toggleTheme } = useTheme();
@@ -153,6 +164,8 @@ export function LibraryView({
     // 2. Window Focus & Visibility Change:
     // When the user switches back from X to the Shelf tab, instantly update
     const handleFocusOrVisibility = () => {
+      // Ignore focus events within 2.5s of initial mount, as SSR data is already fresh
+      if (Date.now() - mountTimeRef.current < 2500) return;
       if (document.visibilityState === 'visible') {
         refreshBookmarks();
       }
@@ -182,13 +195,14 @@ export function LibraryView({
     window.addEventListener('message', handleWindowMessage);
 
     // 5. Lightweight background polling heartbeat (every 3 seconds when tab is active)
-    let lastBookmarkCount = bookmarks.length;
-    let lastLatestId = bookmarks[0]?.id || '';
+    let lastBookmarkCount = bookmarksRef.current.length;
+    let lastLatestId = bookmarksRef.current[0]?.id || '';
 
     const heartbeatTimer = setInterval(async () => {
       if (document.hidden) return; // Save resources when tab is backgrounded
 
       try {
+        const currentRefList = bookmarksRef.current;
         const { count, error: countErr } = await supabase
           .from('bookmarks')
           .select('id', { count: 'exact', head: true })
@@ -228,7 +242,7 @@ export function LibraryView({
       }
       clearInterval(heartbeatTimer);
     };
-  }, [userId, supabase, refreshBookmarks, bookmarks]);
+  }, [userId, supabase, refreshBookmarks]);
 
   // Global keyboard shortcuts (Cmd+K for palette, T for triage)
   useEffect(() => {
@@ -387,6 +401,45 @@ export function LibraryView({
     searchQuery,
     sortOption,
   ]);
+
+  // Reset visible card count whenever filters, search, or view changes
+  useEffect(() => {
+    setVisibleCount(24);
+  }, [
+    currentView,
+    selectedCategoryId,
+    selectedTagId,
+    searchQuery,
+    mediaFilter,
+    threadsFilter,
+    unreadFilter,
+    pinnedFilter,
+    sortOption,
+  ]);
+
+  // Windowed subset of bookmarks for ultra-fast rendering & low DOM overhead
+  const displayedBookmarks = useMemo(() => {
+    return filteredBookmarks.slice(0, visibleCount);
+  }, [filteredBookmarks, visibleCount]);
+
+  // Progressive infinite loading as the user scrolls towards the bottom
+  useEffect(() => {
+    if (visibleCount >= filteredBookmarks.length) return;
+    const el = loadMoreRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setVisibleCount((prev) => Math.min(prev + 24, filteredBookmarks.length));
+        }
+      },
+      { rootMargin: '600px' }
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [visibleCount, filteredBookmarks.length]);
 
   // Handlers for Bookmark Actions
   const handleTogglePin = async (id: string, isPinned: boolean) => {
@@ -914,34 +967,49 @@ export function LibraryView({
                     />
                   )
                 ) : (
-                  <div
-                    className={
-                      viewMode === 'grid'
-                        ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4'
-                        : 'space-y-4'
-                    }
-                  >
-                    {filteredBookmarks.map((bookmark) => (
-                      <TweetCard
-                        key={bookmark.id}
-                        bookmark={bookmark}
-                        categories={categories}
-                        onTogglePin={handleTogglePin}
-                        onToggleRead={handleToggleRead}
-                        onUpdateCategory={handleUpdateCategory}
-                        onUpdateNote={handleUpdateNote}
-                        onDelete={handleDeleteBookmark}
-                        onSelectTag={(tagName) => {
-                          const matched = tags.find(
-                            (t) => t.name.toLowerCase() === tagName.toLowerCase()
-                          );
-                          if (matched) {
-                            setSelectedTagId(matched.id);
-                          }
-                        }}
-                      />
-                    ))}
-                  </div>
+                  <>
+                    <div
+                      className={
+                        viewMode === 'grid'
+                          ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4'
+                          : 'space-y-4'
+                      }
+                    >
+                      {displayedBookmarks.map((bookmark) => (
+                        <TweetCard
+                          key={bookmark.id}
+                          bookmark={bookmark}
+                          categories={categories}
+                          onTogglePin={handleTogglePin}
+                          onToggleRead={handleToggleRead}
+                          onUpdateCategory={handleUpdateCategory}
+                          onUpdateNote={handleUpdateNote}
+                          onDelete={handleDeleteBookmark}
+                          onSelectTag={(tagName) => {
+                            const matched = tags.find(
+                              (t) => t.name.toLowerCase() === tagName.toLowerCase()
+                            );
+                            if (matched) {
+                              setSelectedTagId(matched.id);
+                            }
+                          }}
+                        />
+                      ))}
+                    </div>
+
+                    {/* Infinite Scroll Sentinel */}
+                    {visibleCount < filteredBookmarks.length && (
+                      <div
+                        ref={loadMoreRef}
+                        className="py-6 flex items-center justify-center text-xs text-[#71717A] dark:text-[#A1A1AA]"
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-pulse" />
+                          <span>Loading more bookmarks ({displayedBookmarks.length} of {filteredBookmarks.length})...</span>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </main>

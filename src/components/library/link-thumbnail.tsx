@@ -28,6 +28,11 @@ export function LinkThumbnail({
   url,
   variant = 'card',
 }: LinkThumbnailProps) {
+  const containerRef = React.useRef<HTMLElement | null>(null);
+  const [isInView, setIsInView] = useState(() => {
+    return Boolean(link?.thumbnail_url || (url && linkPreviewCache.has(url)));
+  });
+
   // Initial state check
   const [preview, setPreview] = useState<PreviewState | null>(() => {
     if (link?.thumbnail_url) {
@@ -44,8 +49,35 @@ export function LinkThumbnail({
     return null;
   });
 
-  const [isLoading, setIsLoading] = useState(!preview && Boolean(url));
+  const [isLoading, setIsLoading] = useState(false);
   const [hasImageError, setHasImageError] = useState(false);
+
+  // Lazy observer: only fetch preview when card is in or approaching viewport
+  useEffect(() => {
+    if (isInView || link?.thumbnail_url || (url && linkPreviewCache.has(url))) {
+      setIsInView(true);
+      return;
+    }
+
+    const el = containerRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      setIsInView(true);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setIsInView(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '350px' }
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isInView, url, link?.thumbnail_url]);
 
   useEffect(() => {
     // If we already have a thumbnail from link or cache, don't fetch
@@ -68,6 +100,11 @@ export function LinkThumbnail({
     if (linkPreviewCache.has(url)) {
       setPreview(linkPreviewCache.get(url)!);
       setIsLoading(false);
+      return;
+    }
+
+    // Don't fetch until scrolled near viewport
+    if (!isInView) {
       return;
     }
 
@@ -111,7 +148,7 @@ export function LinkThumbnail({
     return () => {
       isMounted = false;
     };
-  }, [url, link?.thumbnail_url, link?.title, link?.display_url, link?.domain, link?.description]);
+  }, [isInView, url, link?.thumbnail_url, link?.title, link?.display_url, link?.domain, link?.description]);
 
   const displayDomain =
     preview?.domain ||
@@ -134,10 +171,21 @@ export function LinkThumbnail({
 
   const containerHeightClass = variant === 'triage' ? 'aspect-video w-full' : 'h-[150px] w-full';
 
-  // 1. Loading Skeleton state
+  // 1. Offscreen placeholder state (zero network, zero animation overhead until scrolled near)
+  if (!isInView && !preview) {
+    return (
+      <div
+        ref={containerRef as any}
+        className={`${containerHeightClass} rounded-lg overflow-hidden border border-[#E5E5E3] dark:border-[#26262B] flex-shrink-0 mt-2 bg-[#F4F4F3]/60 dark:bg-[#26262B]/60`}
+      />
+    );
+  }
+
+  // 2. Loading Skeleton state (when in view and actively fetching)
   if (isLoading) {
     return (
       <div
+        ref={containerRef as any}
         className={`${containerHeightClass} rounded-lg overflow-hidden border border-[#E5E5E3] dark:border-[#26262B] flex-shrink-0 mt-2 bg-[#F4F4F3] dark:bg-[#26262B] animate-pulse flex flex-col justify-between p-3.5`}
       >
         <div className="flex items-center gap-2">
@@ -152,10 +200,11 @@ export function LinkThumbnail({
     );
   }
 
-  // 2. Rich Thumbnail image loaded
+  // 3. Rich Thumbnail image loaded
   if (preview?.image && !hasImageError) {
     return (
       <a
+        ref={containerRef as any}
         href={url}
         target="_blank"
         rel="noopener noreferrer"
@@ -187,9 +236,10 @@ export function LinkThumbnail({
     );
   }
 
-  // 3. Fallback preview banner when no thumbnail is available
+  // 4. Fallback preview banner when no thumbnail is available
   return (
     <a
+      ref={containerRef as any}
       href={url}
       target="_blank"
       rel="noopener noreferrer"
