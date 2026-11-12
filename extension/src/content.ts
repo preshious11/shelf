@@ -10,6 +10,8 @@ let savedTweetIds = new Set<string>();
 let seenThisSession = new Set<string>();
 let pendingQueue: ExtractedTweet[] = [];
 let floatingWidget: HTMLElement | null = null;
+let hasAutoSyncedForCurrentVisit = false;
+let autoSyncTimer: number | null = null;
 
 interface InterceptedRequest {
   url: string;
@@ -452,6 +454,13 @@ async function startCapture() {
     console.log('[shelf] Sync is already in progress. Ignoring duplicate start request.');
     return;
   }
+
+  // Cancel any pending auto-sync timer and mark as synced for this visit
+  if (autoSyncTimer !== null) {
+    window.clearTimeout(autoSyncTimer);
+    autoSyncTimer = null;
+  }
+  hasAutoSyncedForCurrentVisit = true;
 
   isCapturing = true;
   shouldStop = false;
@@ -1134,6 +1143,78 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   }
 });
 
+// Helper: detect if current URL is specifically the bookmarks page
+function isBookmarksPage(): boolean {
+  const url = window.location.href.toLowerCase();
+  const path = window.location.pathname.toLowerCase();
+  return (
+    path.startsWith('/i/bookmarks') ||
+    url.includes('x.com/i/bookmarks') ||
+    url.includes('twitter.com/i/bookmarks')
+  );
+}
+
+// Automatically start sync a few seconds after x.com/i/bookmarks loads if enabled (on by default)
+function checkAndScheduleAutoSync() {
+  if (!isBookmarksPage()) {
+    // Navigated away from bookmarks: reset visit tracking and clear pending auto-sync timer
+    hasAutoSyncedForCurrentVisit = false;
+    if (autoSyncTimer !== null) {
+      window.clearTimeout(autoSyncTimer);
+      autoSyncTimer = null;
+    }
+    return;
+  }
+
+  // If already capturing or already triggered auto-sync for this visit, don't trigger again
+  if (hasAutoSyncedForCurrentVisit || isCapturing) {
+    return;
+  }
+
+  if (autoSyncTimer !== null) {
+    return;
+  }
+
+  try {
+    chrome.storage.sync.get(['shelf_auto_sync_on_open'], (data) => {
+      if (chrome.runtime.lastError) return;
+
+      // Default is true (on by default)
+      const isAutoSyncEnabled = data?.shelf_auto_sync_on_open !== false;
+      if (!isAutoSyncEnabled) return;
+
+      if (hasAutoSyncedForCurrentVisit || isCapturing || autoSyncTimer !== null) return;
+
+      console.log('[shelf] Auto-sync is enabled. Sync will start automatically in 3 seconds...');
+
+      autoSyncTimer = window.setTimeout(() => {
+        autoSyncTimer = null;
+        if (isBookmarksPage() && !isCapturing && !hasAutoSyncedForCurrentVisit) {
+          hasAutoSyncedForCurrentVisit = true;
+          console.log('[shelf] Triggering automatic bookmark sync on x.com/i/bookmarks...');
+          startCapture();
+        }
+      }, 3000);
+    });
+  } catch (err) {
+    console.warn('[shelf] Error checking auto-sync preference:', err);
+  }
+}
+
+// React to auto-sync preference toggle changes in real time
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'sync' && changes.shelf_auto_sync_on_open) {
+    if (changes.shelf_auto_sync_on_open.newValue === false) {
+      if (autoSyncTimer !== null) {
+        window.clearTimeout(autoSyncTimer);
+        autoSyncTimer = null;
+      }
+    } else if (changes.shelf_auto_sync_on_open.newValue === true) {
+      checkAndScheduleAutoSync();
+    }
+  }
+});
+
 // Watchdog interval to make sure pill stays anchored
 setInterval(ensureWidget, 600);
 
@@ -1144,7 +1225,11 @@ new MutationObserver(() => {
   if (url !== lastUrl) {
     lastUrl = url;
     ensureWidget();
+    checkAndScheduleAutoSync();
   }
 }).observe(document, { subtree: true, childList: true });
 
+window.addEventListener('popstate', checkAndScheduleAutoSync);
+
 ensureWidget();
+checkAndScheduleAutoSync();

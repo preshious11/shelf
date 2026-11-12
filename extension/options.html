@@ -173,6 +173,14 @@
           <div class="hint">Generated in your Shelf web app under Settings > Chrome Extension API Tokens.</div>
         </div>
 
+        <div class="form-group" style="display: flex; align-items: center; justify-content: space-between; margin-top: 20px;">
+          <div style="padding-right: 16px;">
+            <label for="autoSync" style="margin-bottom: 2px; font-weight: 600; color: var(--text-main); cursor: pointer;">Auto-sync when I open my bookmarks</label>
+            <div class="hint" style="margin-top: 0;">Automatically start sync a few seconds after opening x.com/i/bookmarks.</div>
+          </div>
+          <input type="checkbox" id="autoSync" checked style="width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0;" />
+        </div>
+
         <div class="buttons">
           <button type="submit" class="btn-primary" id="save-btn">Save Configuration</button>
           <button type="button" class="btn-secondary" id="test-btn">Test Connection</button>

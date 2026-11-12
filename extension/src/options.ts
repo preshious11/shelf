@@ -1,12 +1,13 @@
 document.addEventListener('DOMContentLoaded', () => {
   const appUrlInput = document.getElementById('appUrl') as HTMLInputElement;
   const apiTokenInput = document.getElementById('apiToken') as HTMLInputElement;
+  const autoSyncInput = document.getElementById('autoSync') as HTMLInputElement;
   const form = document.getElementById('options-form') as HTMLFormElement;
   const testBtn = document.getElementById('test-btn') as HTMLButtonElement;
   const statusBox = document.getElementById('status-box') as HTMLDivElement;
 
   // Load existing settings
-  chrome.storage.sync.get(['shelf_app_url', 'shelf_api_token'], (data) => {
+  chrome.storage.sync.get(['shelf_app_url', 'shelf_api_token', 'shelf_auto_sync_on_open'], (data) => {
     if (data.shelf_app_url) {
       appUrlInput.value = data.shelf_app_url;
     } else {
@@ -14,6 +15,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (data.shelf_api_token) {
       apiTokenInput.value = data.shelf_api_token;
+    }
+    if (autoSyncInput) {
+      autoSyncInput.checked = data.shelf_auto_sync_on_open !== false;
     }
   });
 
@@ -55,6 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
         {
           shelf_app_url: rawAppUrl,
           shelf_api_token: apiToken,
+          shelf_auto_sync_on_open: autoSyncInput ? autoSyncInput.checked : true,
         },
         () => {
           showStatus('Configuration saved successfully and host permissions updated.');

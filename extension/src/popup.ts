@@ -9,6 +9,21 @@ document.addEventListener('DOMContentLoaded', () => {
   const syncStatusVal = document.getElementById('sync-status-val') as HTMLElement;
   const syncProgressCount = document.getElementById('sync-progress-count') as HTMLElement;
   const stopSyncBtn = document.getElementById('stop-sync-btn') as HTMLButtonElement;
+  const autoSyncToggle = document.getElementById('auto-sync-toggle') as HTMLInputElement | null;
+
+  // Load auto-sync setting (on by default)
+  chrome.storage.sync.get(['shelf_auto_sync_on_open'], (data) => {
+    const isAutoSyncEnabled = data.shelf_auto_sync_on_open !== false;
+    if (autoSyncToggle) {
+      autoSyncToggle.checked = isAutoSyncEnabled;
+    }
+  });
+
+  if (autoSyncToggle) {
+    autoSyncToggle.addEventListener('change', () => {
+      chrome.storage.sync.set({ shelf_auto_sync_on_open: autoSyncToggle.checked });
+    });
+  }
 
   // Load initial settings and last sync stats
   chrome.storage.sync.get(
