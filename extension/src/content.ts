@@ -1,20 +1,80 @@
 import { extractTweetFromElement, type ExtractedTweet } from './extractor';
-import { SELECTORS, querySelectorAllFirst } from './selectors';
+import { SELECTORS } from './selectors';
 
 // Global state
 let isCapturing = false;
 let shouldStop = false;
 let newlySavedCount = 0;
 let alreadySavedCount = 0;
+let savedTweetIds = new Set<string>();
+let seenInSession = new Set<string>();
+let pendingQueue: ExtractedTweet[] = [];
 let floatingWidget: HTMLElement | null = null;
 
-// Helper to delay with randomized pacing
-function randomDelay(minMs = 1200, maxMs = 2200): Promise<void> {
-  const ms = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// Helper: load saved tweet IDs from local persistent extension storage
+async function loadSavedTweetIdsFromStorage(): Promise<Set<string>> {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(['shelf_saved_tweet_ids'], (data) => {
+        if (chrome.runtime.lastError) {
+          console.warn('[shelf] Error reading storage.local:', chrome.runtime.lastError.message);
+          resolve(new Set());
+          return;
+        }
+        const list = data?.shelf_saved_tweet_ids;
+        if (Array.isArray(list)) {
+          resolve(new Set(list.map((id) => String(id))));
+        } else {
+          resolve(new Set());
+        }
+      });
+    } catch (err) {
+      console.error('[shelf] Exception loading saved IDs:', err);
+      resolve(new Set());
+    }
+  });
 }
 
-// Detect if current page is bookmarks, history, or has tweets
+// Helper: persist saved tweet IDs to local persistent extension storage
+async function persistSavedTweetIds(ids: Set<string>): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.set({ shelf_saved_tweet_ids: Array.from(ids) }, () => {
+        resolve();
+      });
+    } catch (err) {
+      console.error('[shelf] Exception persisting saved IDs:', err);
+      resolve();
+    }
+  });
+}
+
+// Helper: broadcast sync progress to popup and storage
+function broadcastSyncProgress(
+  status: 'capturing' | 'done' | 'idle' | 'rate_limited' | 'error',
+  statusText?: string
+) {
+  try {
+    const payload = {
+      type: 'SYNC_PROGRESS',
+      isCapturing,
+      savedCount: newlySavedCount,
+      alreadySavedCount,
+      status,
+      statusText: statusText || (isCapturing ? `Syncing… ${newlySavedCount} saved` : 'Done'),
+      isDone: status === 'done',
+    };
+
+    chrome.storage.local.set({ shelf_sync_state: payload });
+    chrome.runtime.sendMessage(payload).catch(() => {
+      // Popup might be closed, harmless
+    });
+  } catch (err) {
+    console.warn('[shelf] Error broadcasting sync progress:', err);
+  }
+}
+
+// Helper: detect if current URL is bookmarks or history
 function isBookmarksOrHistoryPage(): boolean {
   const url = window.location.href.toLowerCase();
   const path = window.location.pathname.toLowerCase();
@@ -28,7 +88,7 @@ function isBookmarksOrHistoryPage(): boolean {
   );
 }
 
-// Fetch existing tweet IDs already saved in Shelf
+// Helper: fetch existing tweet IDs already saved in Shelf web app database
 async function fetchKnownIdsViaBackground(): Promise<{ success: boolean; ids: Set<string>; error?: string }> {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage({ type: 'GET_KNOWN_IDS' }, (res) => {
@@ -50,7 +110,7 @@ async function fetchKnownIdsViaBackground(): Promise<{ success: boolean; ids: Se
   });
 }
 
-// Send batch via Background Service Worker
+// Helper: send batch of tweets to background service worker for ingestion
 async function sendBatchViaBackground(
   batch: ExtractedTweet[]
 ): Promise<{ added: number; skipped: number }> {
@@ -75,50 +135,145 @@ async function sendBatchViaBackground(
   });
 }
 
-// Find all tweet containers on the page with multiple fallback strategies
-function findTweetElements(doc: Document): Element[] {
-  // Strategy 1: Direct tweet articles
-  const articles = Array.from(
-    doc.querySelectorAll('article[data-testid="tweet"], article[role="article"]')
-  );
-  if (articles.length > 0) {
-    return articles;
-  }
+// Helper: send batch with retry and exponential backoff (up to 5 attempts)
+async function sendBatchWithRetry(batch: ExtractedTweet[], maxAttempts = 5): Promise<boolean> {
+  let attempt = 0;
+  let delayMs = 1000;
 
-  // Strategy 2: CellInnerDiv containing status link or time
-  const cells = Array.from(doc.querySelectorAll('div[data-testid="cellInnerDiv"]')).filter(
-    (cell) =>
-      cell.querySelector('a[href*="/status/"]') ||
-      cell.querySelector('time') ||
-      cell.querySelector('[data-testid="tweetText"]')
-  );
-  if (cells.length > 0) {
-    return cells;
-  }
+  while (attempt < maxAttempts) {
+    if (shouldStop) return false;
+    attempt++;
+    try {
+      console.log(`[shelf] Ingesting batch of ${batch.length} tweets (attempt ${attempt}/${maxAttempts})...`);
+      const res = await sendBatchViaBackground(batch);
+      console.log('[shelf] Ingest response:', res);
+      return true;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[shelf] Batch attempt ${attempt}/${maxAttempts} failed:`, msg);
 
-  // Strategy 3: Status-link traversal fallback
-  const statusLinks = Array.from(doc.querySelectorAll<HTMLAnchorElement>('a[href*="/status/"]'));
-  const containers = new Set<Element>();
+      if (attempt >= maxAttempts) {
+        console.error('[shelf] Batch failed all 5 attempts. Keeping in queue for next round.');
+        return false;
+      }
 
-  for (const a of statusLinks) {
-    const href = a.getAttribute('href') || '';
-    if (!href.match(/\/status\/\d+/)) continue;
+      // Exponential backoff: 1s, 2s, 4s, 8s, 16s + jitter
+      const jitter = Math.floor(Math.random() * 500);
+      const waitTime = delayMs + jitter;
+      console.log(`[shelf] Retrying batch in ${waitTime}ms...`);
 
-    const card =
-      a.closest('article') ||
-      a.closest('div[data-testid="cellInnerDiv"]') ||
-      a.closest('div[role="article"]') ||
-      a.closest('section > div > div > div');
-
-    if (card) {
-      containers.add(card);
+      const startWait = Date.now();
+      while (Date.now() - startWait < waitTime) {
+        if (shouldStop) return false;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      delayMs *= 2;
     }
   }
-
-  return Array.from(containers);
+  return false;
 }
 
-// Check if Twitter is actively loading the next batch of tweets
+// Helper: process pending queue in batches of ~20
+async function processPendingQueue(forceFlushAll = false): Promise<void> {
+  const BATCH_SIZE = 20;
+
+  while (pendingQueue.length >= BATCH_SIZE || (forceFlushAll && pendingQueue.length > 0)) {
+    if (shouldStop) break;
+
+    const countToSend = Math.min(BATCH_SIZE, pendingQueue.length);
+    const batch = pendingQueue.slice(0, countToSend);
+
+    const success = await sendBatchWithRetry(batch, 5);
+    if (success) {
+      // Remove successfully ingested batch from queue
+      pendingQueue.splice(0, countToSend);
+      // Mark as saved
+      batch.forEach((t) => savedTweetIds.add(t.tweet_id));
+      newlySavedCount += countToSend;
+      await persistSavedTweetIds(savedTweetIds);
+      broadcastSyncProgress('capturing');
+
+      if (floatingWidget) {
+        renderWidgetContent(floatingWidget, 'capturing', {
+          newCount: newlySavedCount,
+          existingCount: alreadySavedCount,
+        });
+      }
+    } else {
+      // Keep tweets in queue for next round; do not drop or exit loop
+      console.warn(`[shelf] ${pendingQueue.length} tweets remain queued for next round.`);
+      break;
+    }
+  }
+}
+
+// Helper: find all candidate tweet elements in DOM
+function findTweetElements(doc: Document): Element[] {
+  try {
+    // Strategy 1: Direct tweet articles
+    const articles = Array.from(
+      doc.querySelectorAll('article[data-testid="tweet"], article[role="article"]')
+    );
+    if (articles.length > 0) {
+      return articles;
+    }
+
+    // Strategy 2: CellInnerDiv containing status link or time
+    const cells = Array.from(doc.querySelectorAll('div[data-testid="cellInnerDiv"]')).filter(
+      (cell) =>
+        cell.querySelector('a[href*="/status/"]') ||
+        cell.querySelector('time') ||
+        cell.querySelector('[data-testid="tweetText"]')
+    );
+    if (cells.length > 0) {
+      return cells;
+    }
+
+    // Strategy 3: Status-link traversal fallback
+    const statusLinks = Array.from(doc.querySelectorAll<HTMLAnchorElement>('a[href*="/status/"]'));
+    const containers = new Set<Element>();
+
+    for (const a of statusLinks) {
+      const href = a.getAttribute('href') || '';
+      if (!href.match(/\/status\/\d+/)) continue;
+
+      const card =
+        a.closest('article') ||
+        a.closest('div[data-testid="cellInnerDiv"]') ||
+        a.closest('div[role="article"]') ||
+        a.closest('section > div > div > div');
+
+      if (card) {
+        containers.add(card);
+      }
+    }
+
+    return Array.from(containers);
+  } catch (err) {
+    console.error('[shelf] Error finding tweet elements:', err);
+    return [];
+  }
+}
+
+// Helper: get visible status IDs currently in the DOM (accounts for list virtualization)
+function getVisibleStatusIds(): Set<string> {
+  const ids = new Set<string>();
+  try {
+    const links = document.querySelectorAll<HTMLAnchorElement>('a[href*="/status/"]');
+    for (const a of links) {
+      const href = a.getAttribute('href') || '';
+      const match = href.match(/\/status\/(\d+)/);
+      if (match && match[1]) {
+        ids.add(match[1]);
+      }
+    }
+  } catch (err) {
+    console.error('[shelf] Error getting visible status IDs:', err);
+  }
+  return ids;
+}
+
+// Helper: check if Twitter is actively displaying a loading spinner
 function isTwitterLoading(): boolean {
   return !!(
     document.querySelector('div[role="progressbar"]') ||
@@ -128,70 +283,183 @@ function isTwitterLoading(): boolean {
   );
 }
 
-// Check and click any "Retry" / "Try again" buttons rendered by Twitter on error or rate-limit
-function checkAndClickRetry(): boolean {
-  const candidates = Array.from(document.querySelectorAll('button, div[role="button"]'));
-  for (const el of candidates) {
-    const txt = (el.textContent || '').trim().toLowerCase();
-    if (txt === 'retry' || txt === 'try again') {
-      console.log('[Shelf] Twitter retry button detected, clicking...');
-      (el as HTMLElement).click();
-      return true;
+// Helper: check and handle Twitter's "Retry" button after rate limit
+async function checkAndHandleRetry(): Promise<boolean> {
+  try {
+    const candidates = Array.from(document.querySelectorAll('button, div[role="button"]'));
+    for (const el of candidates) {
+      const txt = (el.textContent || '').trim().toLowerCase();
+      if (txt === 'retry' || txt === 'try again') {
+        console.log('[shelf] Twitter retry button detected! Clicking and cooling down for 60 seconds...');
+        try {
+          (el as HTMLElement).click();
+        } catch (clickErr) {
+          console.error('[shelf] Error clicking retry button:', clickErr);
+        }
+
+        broadcastSyncProgress('rate_limited', 'Rate limited by X. Waiting 60s...');
+
+        // Wait 60 seconds, checking shouldStop every second
+        for (let sec = 60; sec > 0; sec--) {
+          if (shouldStop) break;
+          if (floatingWidget) {
+            renderWidgetContent(floatingWidget, 'capturing', {
+              newCount: newlySavedCount,
+              statusText: `Rate limited. Waiting ${sec}s...`,
+            });
+          }
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+        return true;
+      }
     }
+  } catch (err) {
+    console.error('[shelf] Error in checkAndHandleRetry:', err);
   }
   return false;
 }
 
-// Trigger deep scroll and re-intersection for Twitter's virtualized infinite feed
-function triggerDeepScroll(): void {
-  checkAndClickRetry();
-
-  // Dispatch synthetic wheel & scroll events
-  window.dispatchEvent(new Event('scroll'));
-  window.dispatchEvent(new WheelEvent('wheel', { deltaY: 350, bubbles: true }));
-
-  const scrollHeight = Math.max(
-    document.documentElement.scrollHeight,
-    document.body.scrollHeight
-  );
-  const currentY = window.scrollY || window.pageYOffset;
-  const isNearBottom = currentY + window.innerHeight >= scrollHeight - 350;
-
-  if (isNearBottom) {
-    // Micro-bounce: scroll up 450px then back to absolute bottom to trigger Twitter's bottom sentinel
-    window.scrollBy({ top: -450, behavior: 'auto' });
-    setTimeout(() => {
-      window.scrollTo({
-        top: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight),
-        behavior: 'smooth',
-      });
-      window.dispatchEvent(new Event('scroll'));
-    }, 180);
-  } else {
-    window.scrollBy({
-      top: window.innerHeight * 0.9,
+// Helper: nudge lazy loader when 0 tweets found in a round (scroll up ~600px, pause, then jump to bottom)
+async function nudgeLazyLoader(): Promise<void> {
+  console.log('[shelf] Nudging lazy loader: scrolling up ~600px, then jumping to bottom...');
+  try {
+    window.scrollBy({ top: -600, behavior: 'auto' });
+    await new Promise((r) => setTimeout(r, 450));
+    window.scrollTo({
+      top: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight),
       behavior: 'smooth',
     });
+    window.dispatchEvent(new Event('scroll'));
+    window.dispatchEvent(new WheelEvent('wheel', { deltaY: 450, bubbles: true }));
+    await new Promise((r) => setTimeout(r, 350));
+  } catch (err) {
+    console.error('[shelf] Error nudging lazy loader:', err);
   }
+}
 
-  // Also check and scroll container elements if Twitter uses an internal scroll container
-  const scrollables = [
-    document.querySelector('main'),
-    document.querySelector('div[data-testid="primaryColumn"]'),
-    document.querySelector('section[role="region"]'),
-  ];
-  for (const el of scrollables) {
-    if (el && el.scrollHeight > el.clientHeight && el.clientHeight > 0) {
-      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 250) {
-        el.scrollBy({ top: -350, behavior: 'auto' });
-        setTimeout(() => {
-          el.scrollTop = el.scrollHeight;
-        }, 150);
-      } else {
-        el.scrollBy({ top: window.innerHeight * 0.9, behavior: 'smooth' });
+// Helper: trigger deep scroll on document and potential scrollable containers
+function triggerDeepScroll(): void {
+  try {
+    window.dispatchEvent(new Event('scroll'));
+    window.dispatchEvent(new WheelEvent('wheel', { deltaY: 350, bubbles: true }));
+
+    const scrollHeight = Math.max(
+      document.documentElement.scrollHeight,
+      document.body.scrollHeight
+    );
+    const currentY = window.scrollY || window.pageYOffset;
+    const isNearBottom = currentY + window.innerHeight >= scrollHeight - 350;
+
+    if (isNearBottom) {
+      window.scrollBy({ top: -450, behavior: 'auto' });
+      setTimeout(() => {
+        window.scrollTo({
+          top: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight),
+          behavior: 'smooth',
+        });
+        window.dispatchEvent(new Event('scroll'));
+      }, 180);
+    } else {
+      window.scrollBy({
+        top: window.innerHeight * 0.9,
+        behavior: 'smooth',
+      });
+    }
+
+    const scrollables = [
+      document.querySelector('main'),
+      document.querySelector('div[data-testid="primaryColumn"]'),
+      document.querySelector('section[role="region"]'),
+    ];
+    for (const el of scrollables) {
+      if (el && el.scrollHeight > el.clientHeight && el.clientHeight > 0) {
+        if (el.scrollTop + el.clientHeight >= el.scrollHeight - 250) {
+          el.scrollBy({ top: -350, behavior: 'auto' });
+          setTimeout(() => {
+            el.scrollTop = el.scrollHeight;
+          }, 150);
+        } else {
+          el.scrollBy({ top: window.innerHeight * 0.9, behavior: 'smooth' });
+        }
       }
     }
+  } catch (err) {
+    console.error('[shelf] Error in triggerDeepScroll:', err);
   }
+}
+
+// Helper: wait up to 5 seconds using MutationObserver for new tweets or virtualization DOM updates
+function waitForNewTweetsOrMutation(
+  previousVisibleIds: Set<string>,
+  timeoutMs = 5000
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    // Check if new IDs already mounted
+    const currentIds = getVisibleStatusIds();
+    for (const id of currentIds) {
+      if (!previousVisibleIds.has(id)) {
+        resolve(true);
+        return;
+      }
+    }
+
+    let resolved = false;
+    let observer: MutationObserver | null = null;
+    let checkInterval: number | null = null;
+    let timer: number | null = null;
+
+    const cleanup = () => {
+      if (resolved) return;
+      resolved = true;
+      if (observer) {
+        observer.disconnect();
+        observer = null;
+      }
+      if (checkInterval !== null) {
+        window.clearInterval(checkInterval);
+        checkInterval = null;
+      }
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+    };
+
+    const checkForChanges = () => {
+      if (resolved) return;
+      if (shouldStop) {
+        cleanup();
+        resolve(false);
+        return;
+      }
+      const nowIds = getVisibleStatusIds();
+      for (const id of nowIds) {
+        if (!previousVisibleIds.has(id)) {
+          cleanup();
+          resolve(true);
+          return;
+        }
+      }
+    };
+
+    try {
+      observer = new MutationObserver(() => {
+        checkForChanges();
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    } catch (obsErr) {
+      console.error('[shelf] Error creating MutationObserver:', obsErr);
+    }
+
+    // Interval poll fallback every 250ms
+    checkInterval = window.setInterval(checkForChanges, 250);
+
+    // Timeout fallback after timeoutMs
+    timer = window.setTimeout(() => {
+      cleanup();
+      resolve(false);
+    }, timeoutMs);
+  });
 }
 
 // Create and inject the floating widget
@@ -199,12 +467,16 @@ function createFloatingWidget() {
   if (!document.body) return;
 
   const existing = document.getElementById('shelf-floating-widget');
-  if (existing && document.body.contains(existing)) return;
-  if (existing) existing.remove();
+  if (existing && document.body.contains(existing)) {
+    return;
+  }
+  if (existing) {
+    existing.remove();
+  }
 
-  const container = document.createElement('div');
-  container.id = 'shelf-floating-widget';
-  container.style.cssText = `
+  const widget = document.createElement('div');
+  widget.id = 'shelf-floating-widget';
+  widget.style.cssText = `
     position: fixed !important;
     bottom: 32px !important;
     right: 32px !important;
@@ -217,21 +489,25 @@ function createFloatingWidget() {
     user-select: none !important;
   `;
 
-  renderWidgetContent(container, 'idle');
-  document.body.appendChild(container);
-  floatingWidget = container;
-  console.log('[Shelf] Floating widget anchored to document.body');
+  renderWidgetContent(widget, 'idle');
+  document.body.appendChild(widget);
+  floatingWidget = widget;
+  console.log('[shelf] Floating widget anchored to document.body');
 }
 
+// Render the widget content according to state
 function renderWidgetContent(
   container: HTMLElement,
   state: 'idle' | 'capturing' | 'done' | 'error',
-  info?: { newCount?: number; existingCount?: number; message?: string }
+  info?: {
+    newCount?: number;
+    existingCount?: number;
+    message?: string;
+    statusText?: string;
+  }
 ) {
   if (state === 'idle') {
-    const isSpecialPage = isBookmarksOrHistoryPage();
-    const subLabel = isSpecialPage ? 'Sync bookmarks & history' : 'Sync visible posts';
-
+    const subText = isBookmarksOrHistoryPage() ? 'Sync bookmarks & history' : 'Sync visible posts';
     container.innerHTML = `
       <div style="
         display: flex;
@@ -253,7 +529,7 @@ function renderWidgetContent(
         </svg>
         <div style="display: flex; flex-direction: column; text-align: left; line-height: 1.25;">
           <span id="shelf-btn-label" style="font-weight: 600; font-size: 13px; color: #F4F4F5;">Save to Shelf</span>
-          <span id="shelf-btn-sub" style="font-size: 10px; color: #38BDF8; font-weight: 500;">${subLabel}</span>
+          <span id="shelf-btn-sub" style="font-size: 10px; color: #38BDF8; font-weight: 500;">${subText}</span>
         </div>
       </div>
     `;
@@ -265,8 +541,9 @@ function renderWidgetContent(
       startCapture();
     });
   } else if (state === 'capturing') {
-    const newCount = info?.newCount || 0;
-    const existingCount = info?.existingCount || 0;
+    const saved = info?.newCount || newlySavedCount;
+    const existing = info?.existingCount || alreadySavedCount;
+    const extraStatus = info?.statusText || (existing > 0 ? `${existing} already in Shelf` : 'Scanning bookmarks...');
 
     container.innerHTML = `
       <div style="
@@ -291,17 +568,18 @@ function renderWidgetContent(
           animation: pulse 1.5s infinite;
         "></div>
         <div style="display: flex; flex-direction: column; line-height: 1.2;">
-          <span>Saving: <strong>${newCount} new</strong></span>
-          ${existingCount > 0 ? `<span style="font-size: 10px; color: #A1A1AA;">${existingCount} already in Shelf</span>` : `<span style="font-size: 10px; color: #38BDF8;">Scanning timeline...</span>`}
+          <span>Syncing… <strong>${saved} saved</strong></span>
+          <span style="font-size: 10px; color: #38BDF8;">${extraStatus}</span>
         </div>
         <button id="shelf-btn-stop" style="
           background: #27272A;
           color: #F4F4F5;
           border: 1px solid #3F3F46;
           border-radius: 6px;
-          padding: 3px 8px;
+          padding: 4px 10px;
           font-size: 11px;
           cursor: pointer;
+          font-weight: 600;
         ">Stop</button>
       </div>
     `;
@@ -310,7 +588,7 @@ function renderWidgetContent(
     stopBtn?.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      shouldStop = true;
+      stopCapture();
       if (stopBtn) stopBtn.textContent = 'Stopping...';
     });
   } else if (state === 'done') {
@@ -328,11 +606,11 @@ function renderWidgetContent(
         font-weight: 500;
         border: 1px solid #059669;
       ">
-        <span>✓ ${info?.message || 'Sync completed'}</span>
+        <span>✓ ${info?.message || 'Done'}</span>
       </div>
     `;
     setTimeout(() => {
-      if (floatingWidget) renderWidgetContent(floatingWidget, 'idle');
+      if (floatingWidget && !isCapturing) renderWidgetContent(floatingWidget, 'idle');
     }, 4500);
   } else if (state === 'error') {
     container.innerHTML = `
@@ -353,188 +631,188 @@ function renderWidgetContent(
       </div>
     `;
     setTimeout(() => {
-      if (floatingWidget) renderWidgetContent(floatingWidget, 'idle');
-    }, 6000);
+      if (floatingWidget && !isCapturing) renderWidgetContent(floatingWidget, 'idle');
+    }, 5000);
   }
 }
 
-// The core capture process
+// Stop capture
+function stopCapture() {
+  if (!isCapturing) return;
+  console.log('[shelf] Stop requested by user');
+  shouldStop = true;
+  broadcastSyncProgress('idle', 'Stopping sync...');
+}
+
+// Start continuous capture process
 async function startCapture() {
-  if (isCapturing) return;
+  // Prevent duplicate runs
+  if (isCapturing) {
+    console.log('[shelf] Sync is already in progress. Ignoring duplicate start request.');
+    return;
+  }
 
   isCapturing = true;
   shouldStop = false;
   newlySavedCount = 0;
   alreadySavedCount = 0;
+  pendingQueue = [];
+  seenInSession = new Set<string>();
 
   if (floatingWidget) {
     renderWidgetContent(floatingWidget, 'capturing', { newCount: 0, existingCount: 0 });
   }
+  broadcastSyncProgress('capturing', 'Syncing… 0 saved');
 
-  console.log('[Shelf] Fetching known bookmark IDs from Shelf library...');
-  const knownCheck = await fetchKnownIdsViaBackground();
-  if (!knownCheck.success && knownCheck.error) {
-    console.error('[Shelf] Pre-flight connection failed:', knownCheck.error);
-    let userMsg = knownCheck.error;
-    if (userMsg.includes('API Token not configured')) {
-      userMsg = 'API Token missing. Click extension icon > Options.';
-    } else if (userMsg.includes('401') || userMsg.includes('Invalid or revoked')) {
-      userMsg = 'Invalid API Token. Update in Extension Options.';
-    } else if (userMsg.includes('Database error') || userMsg.includes('SERVICE_ROLE_KEY')) {
-      userMsg = 'Server config error. Check Vercel environment keys.';
-    } else if (userMsg.length > 50) {
-      userMsg = userMsg.slice(0, 47) + '...';
-    }
+  console.log('[shelf] Starting full continuous bookmark sync...');
 
-    if (floatingWidget) {
-      renderWidgetContent(floatingWidget, 'error', { message: userMsg });
-    }
-    isCapturing = false;
-    return;
+  // 1. Load saved IDs from local storage and backend
+  const localSavedIds = await loadSavedTweetIdsFromStorage();
+  savedTweetIds = new Set(localSavedIds);
+
+  console.log(`[shelf] Loaded ${savedTweetIds.size} saved IDs from local storage.`);
+  const backendCheck = await fetchKnownIdsViaBackground();
+  if (backendCheck.success && backendCheck.ids) {
+    backendCheck.ids.forEach((id) => savedTweetIds.add(id));
+    await persistSavedTweetIds(savedTweetIds);
+    console.log(`[shelf] Total known saved IDs merged: ${savedTweetIds.size}`);
+  } else if (backendCheck.error) {
+    console.warn('[shelf] Could not fetch known IDs from backend:', backendCheck.error);
+    // Continue with locally stored IDs!
   }
 
-  const knownInShelf = knownCheck.ids;
-  console.log(`[Shelf] Library currently contains ${knownInShelf.size} bookmarks.`);
-
-  const seenInSession = new Set<string>();
-  let noNewTweetsRounds = 0;
-  const maxIdleRounds = 35; // Patient 35 rounds (~60-80s) of scrolling before completing
-  let lastScrollHeight = document.documentElement.scrollHeight;
+  let emptyRounds = 0;
+  const MAX_EMPTY_ROUNDS = 8; // Only finish after ~8 consecutive rounds with 0 new tweets
 
   try {
-    // If no tweets immediately visible, wait 800ms for X timeline to mount
-    let initialElements = findTweetElements(document);
-    if (initialElements.length === 0) {
-      console.log('[Shelf] Waiting for initial tweets to mount in DOM...');
-      await randomDelay(800, 1200);
-      initialElements = findTweetElements(document);
-    }
-
-    while (!shouldStop && noNewTweetsRounds < maxIdleRounds) {
-      // 1. Check if Twitter network loading spinner is actively visible
-      if (isTwitterLoading()) {
-        console.log('[Shelf] Twitter is fetching more tweets from network, waiting...');
-        noNewTweetsRounds = Math.max(0, noNewTweetsRounds - 1);
-        await randomDelay(1200, 2000);
-        continue;
-      }
-
-      // 2. Check if timeline expanded in height
-      const currentScrollHeight = document.documentElement.scrollHeight;
-      if (currentScrollHeight > lastScrollHeight) {
-        lastScrollHeight = currentScrollHeight;
-        noNewTweetsRounds = 0;
-      }
-
-      // 3. Find candidate tweet elements in DOM
-      const tweetElements = findTweetElements(document);
-      const batchToProcess: ExtractedTweet[] = [];
-      let discoveredThisPass = 0;
-
-      for (const el of tweetElements) {
-        if (shouldStop) break;
-
-        const tweet = extractTweetFromElement(el);
-        if (!tweet) continue;
-
-        // Check if tweet is already stored in Shelf
-        if (knownInShelf.has(tweet.tweet_id)) {
-          if (!seenInSession.has(tweet.tweet_id)) {
-            seenInSession.add(tweet.tweet_id);
-            alreadySavedCount++;
-            discoveredThisPass++;
-            console.log(`[Shelf] Tweet ${tweet.tweet_id} already in Shelf. Skipping.`);
-          }
+    while (!shouldStop && emptyRounds < MAX_EMPTY_ROUNDS) {
+      try {
+        // A. Check for X's "Retry" button
+        const hadRetry = await checkAndHandleRetry();
+        if (hadRetry) {
+          emptyRounds = 0;
           continue;
         }
 
-        // Brand new tweet to save!
-        if (!seenInSession.has(tweet.tweet_id)) {
-          seenInSession.add(tweet.tweet_id);
-          batchToProcess.push(tweet);
-          discoveredThisPass++;
-          console.log(`[Shelf] Found new bookmark: ${tweet.tweet_id} by @${tweet.author_handle}`);
+        if (shouldStop) break;
+
+        // B. Check for active loading spinner
+        if (isTwitterLoading()) {
+          console.log('[shelf] Twitter network loading spinner active, waiting...');
+          await new Promise((r) => setTimeout(r, 1200));
+          continue;
         }
-      }
 
-      // Update widget count in real-time
-      if (floatingWidget) {
-        renderWidgetContent(floatingWidget, 'capturing', {
-          newCount: newlySavedCount + batchToProcess.length,
-          existingCount: alreadySavedCount,
-        });
-      }
+        // C. Snapshot visible status IDs before scrolling to detect new renders
+        const previousVisibleIds = getVisibleStatusIds();
 
-      // Send new bookmarks batch immediately
-      if (batchToProcess.length > 0) {
-        noNewTweetsRounds = 0;
-        console.log(`[Shelf] Transmitting ${batchToProcess.length} new bookmarks to Shelf...`);
-        try {
-          const res = await sendBatchViaBackground(batchToProcess);
-          console.log('[Shelf] Ingest response:', res);
-          const savedCount = typeof res.added === 'number' ? res.added : batchToProcess.length;
-          newlySavedCount += savedCount;
-          // Mark as known in Shelf
-          batchToProcess.forEach((t) => knownInShelf.add(t.tweet_id));
-        } catch (sendErr: unknown) {
-          console.error('[Shelf] Send error:', sendErr);
-          const errText = sendErr instanceof Error ? sendErr.message : 'Ingest failed';
-          let displayMsg = errText;
-          if (displayMsg.includes('401') || displayMsg.includes('Unauthorized') || displayMsg.includes('token')) {
-            displayMsg = 'Auth failed (401). Check API token in Options.';
-          } else if (displayMsg.includes('Database error') || displayMsg.includes('SERVICE_ROLE_KEY')) {
-            displayMsg = 'Server DB error. Check Vercel environment keys.';
-          } else if (displayMsg.length > 50) {
-            displayMsg = displayMsg.slice(0, 47) + '...';
+        // D. Scan and extract all visible tweets in DOM
+        const elements = findTweetElements(document);
+        let newDiscoveredInRound = 0;
+
+        for (const el of elements) {
+          if (shouldStop) break;
+          try {
+            const tweet = extractTweetFromElement(el);
+            if (!tweet || !tweet.tweet_id) continue;
+
+            // Check if already in Shelf
+            if (savedTweetIds.has(tweet.tweet_id)) {
+              if (!seenInSession.has(tweet.tweet_id)) {
+                seenInSession.add(tweet.tweet_id);
+                alreadySavedCount++;
+              }
+              continue;
+            }
+
+            // New bookmark found!
+            if (!seenInSession.has(tweet.tweet_id)) {
+              seenInSession.add(tweet.tweet_id);
+              pendingQueue.push(tweet);
+              newDiscoveredInRound++;
+              console.log(`[shelf] Found new bookmark: ${tweet.tweet_id} by @${tweet.author_handle}`);
+            }
+          } catch (tweetErr) {
+            console.error('[shelf] Error extracting tweet element:', tweetErr);
           }
-          if (floatingWidget) {
-            renderWidgetContent(floatingWidget, 'error', { message: displayMsg });
-          }
-          break; // Stop scrolling if sending failed
         }
-      } else if (discoveredThisPass > 0) {
-        // Discovered existing tweets, which means we are progressing through the feed!
-        noNewTweetsRounds = 0;
-      } else {
-        noNewTweetsRounds++;
-        console.log(`[Shelf] Advancing timeline (idle pass ${noNewTweetsRounds}/${maxIdleRounds})...`);
+
+        // E. Update empty rounds counter
+        if (newDiscoveredInRound > 0) {
+          emptyRounds = 0;
+        } else {
+          emptyRounds++;
+          console.log(`[shelf] No new tweets this round. Consecutive empty rounds: ${emptyRounds}/${MAX_EMPTY_ROUNDS}`);
+        }
+
+        // F. Update UI with progress
+        if (floatingWidget) {
+          renderWidgetContent(floatingWidget, 'capturing', {
+            newCount: newlySavedCount + pendingQueue.length,
+            existingCount: alreadySavedCount,
+          });
+        }
+        broadcastSyncProgress('capturing');
+
+        // G. Process pending queue in batches of ~20 with retry
+        await processPendingQueue(false);
+
+        if (shouldStop) break;
+
+        // H. If consecutive empty round, nudge the lazy loader (scroll up ~600px then bottom)
+        if (emptyRounds > 0 && emptyRounds < MAX_EMPTY_ROUNDS) {
+          await nudgeLazyLoader();
+        } else {
+          triggerDeepScroll();
+        }
+
+        // I. Wait with MutationObserver for X to render new tweet articles (up to 5s)
+        await waitForNewTweetsOrMutation(previousVisibleIds, 5000);
+      } catch (iterErr) {
+        console.error('[shelf] Loop iteration error:', iterErr);
+        // Never exit the loop on error; continue
       }
-
-      if (shouldStop) break;
-
-      // Deep scroll and micro-bounce
-      triggerDeepScroll();
-
-      // Human-like randomized delay
-      await randomDelay(1200, 2000);
     }
 
-    // Save sync info to chrome.storage
+    // Flush any remaining tweets in queue (even if < 20)
+    try {
+      if (pendingQueue.length > 0 && !shouldStop) {
+        console.log(`[shelf] Flushing final ${pendingQueue.length} queued tweets...`);
+        await processPendingQueue(true);
+      }
+    } catch (flushErr) {
+      console.error('[shelf] Error in final queue flush:', flushErr);
+    }
+
+    // Save final stats
     chrome.storage.sync.set({
       shelf_last_sync_time: new Date().toISOString(),
       shelf_last_sync_count: newlySavedCount,
     });
 
-    let finishMessage = '';
-    if (newlySavedCount > 0) {
-      finishMessage = `Saved ${newlySavedCount} new bookmarks! (${alreadySavedCount} already in Shelf)`;
+    let finishMsg = '';
+    if (shouldStop) {
+      finishMsg = `Stopped (${newlySavedCount} saved)`;
+    } else if (newlySavedCount > 0) {
+      finishMsg = `Done (${newlySavedCount} saved)`;
     } else if (alreadySavedCount > 0) {
-      finishMessage = `All ${alreadySavedCount} bookmarks are already in Shelf!`;
+      finishMsg = `Done (${alreadySavedCount} in Shelf)`;
     } else {
-      finishMessage = isBookmarksOrHistoryPage()
-        ? 'No bookmarks detected in this view'
-        : 'No posts found on this page';
+      finishMsg = isBookmarksOrHistoryPage() ? 'Done (no bookmarks found)' : 'Done';
     }
 
     if (floatingWidget) {
-      renderWidgetContent(floatingWidget, 'done', { message: finishMessage });
+      renderWidgetContent(floatingWidget, 'done', { message: finishMsg });
     }
+    broadcastSyncProgress('done', finishMsg);
+    console.log(`[shelf] Sync finished! Total saved: ${newlySavedCount}, Total existing: ${alreadySavedCount}`);
   } catch (err: unknown) {
-    console.error('[Shelf] Sync error:', err);
-    const msg = err instanceof Error ? err.message : 'Sync failed';
+    console.error('[shelf] Fatal sync error:', err);
+    const msg = err instanceof Error ? err.message : 'Sync interrupted';
     if (floatingWidget) {
       renderWidgetContent(floatingWidget, 'error', { message: msg });
     }
+    broadcastSyncProgress('error', msg);
   } finally {
     isCapturing = false;
     shouldStop = false;
@@ -557,24 +835,6 @@ function ensureWidget() {
     if (sub && sub.textContent !== expected) {
       sub.textContent = expected;
     }
-  }
-}
-
-// Auto-sync trigger on page load / refresh
-function checkAutoSync() {
-  try {
-    const autoSync = sessionStorage.getItem('shelf_auto_sync');
-    if (autoSync === '1') {
-      sessionStorage.removeItem('shelf_auto_sync');
-      console.log('[Shelf] Auto-sync scheduled from previous navigation/refresh');
-      setTimeout(() => {
-        if (!isCapturing) {
-          startCapture();
-        }
-      }, 1600);
-    }
-  } catch {
-    // Session storage not accessible
   }
 }
 
@@ -615,81 +875,101 @@ document.addEventListener(
     const target = e.target as HTMLElement | null;
     if (!target) return;
 
-    // Track last interacted tweet container to handle portal dropdown menus
-    const tweetEl = target.closest('article, [data-testid="tweet"]');
-    if (tweetEl) {
-      const timeLink = tweetEl.querySelector('time')?.closest('a');
-      const statusLink = timeLink || tweetEl.querySelector('a[href*="/status/"]');
-      const href = statusLink?.getAttribute('href') || '';
-      const match = href.match(/\/status\/(\d+)/);
-      if (match) {
-        lastInteractedTweetId = match[1];
-      }
-    }
-
-    // Check if clicked element or parent is an un-bookmark trigger
-    const removeTrigger = target.closest(
-      '[data-testid="removeBookmark"], ' +
-      '[aria-label*="Remove"][aria-label*="ookmark"], ' +
-      '[aria-label*="remove"][aria-label*="ookmark"], ' +
-      '[data-testid="bookmark"][aria-label*="Remove"], ' +
-      '[data-testid="bookmark"][aria-label*="remove"]'
-    );
-
-    // Check for dropdown menu item (e.g. from Share or More menu)
-    const menuItem = target.closest('[role="menuitem"], [data-testid="Dropdown"]');
-    const isMenuRemove = menuItem && /remove.*bookmark|delete.*bookmark/i.test(menuItem.textContent || '');
-
-    if (removeTrigger || isMenuRemove) {
-      let tweetId = '';
-
-      // Try finding tweet element from closest ancestor
-      const container = (removeTrigger || menuItem)?.closest(
-        'article, [data-testid="tweet"], [data-testid="cellInnerDiv"], div[role="article"]'
-      );
-      if (container) {
-        const timeLink = container.querySelector('time')?.closest('a');
-        const statusLink = timeLink || container.querySelector('a[href*="/status/"]');
+    try {
+      const tweetEl = target.closest('article, [data-testid="tweet"]');
+      if (tweetEl) {
+        const timeLink = tweetEl.querySelector('time')?.closest('a');
+        const statusLink = timeLink || tweetEl.querySelector('a[href*="/status/"]');
         const href = statusLink?.getAttribute('href') || '';
         const match = href.match(/\/status\/(\d+)/);
         if (match) {
-          tweetId = match[1];
+          lastInteractedTweetId = match[1];
         }
       }
 
-      if (!tweetId) {
-        tweetId = lastInteractedTweetId;
-      }
+      const removeTrigger = target.closest(
+        '[data-testid="removeBookmark"], ' +
+        '[aria-label*="Remove"][aria-label*="ookmark"], ' +
+        '[aria-label*="remove"][aria-label*="ookmark"], ' +
+        '[data-testid="bookmark"][aria-label*="Remove"], ' +
+        '[data-testid="bookmark"][aria-label*="remove"]'
+      );
 
-      if (tweetId) {
-        console.log('[Shelf] Un-bookmark action detected on X for tweet:', tweetId);
-        chrome.runtime.sendMessage(
-          {
-            type: 'DELETE_BOOKMARK',
-            tweetId,
-          },
-          (response) => {
-            if (response && response.success) {
-              console.log('[Shelf] Bookmark auto-removed from Shelf library:', tweetId);
-              showRemovalNotice(tweetId);
-            }
-          }
+      const menuItem = target.closest('[role="menuitem"], [data-testid="Dropdown"]');
+      const isMenuRemove = menuItem && /remove.*bookmark|delete.*bookmark/i.test(menuItem.textContent || '');
+
+      if (removeTrigger || isMenuRemove) {
+        let tweetId = '';
+
+        const container = (removeTrigger || menuItem)?.closest(
+          'article, [data-testid="tweet"], [data-testid="cellInnerDiv"], div[role="article"]'
         );
+        if (container) {
+          const timeLink = container.querySelector('time')?.closest('a');
+          const statusLink = timeLink || container.querySelector('a[href*="/status/"]');
+          const href = statusLink?.getAttribute('href') || '';
+          const match = href.match(/\/status\/(\d+)/);
+          if (match) {
+            tweetId = match[1];
+          }
+        }
+
+        if (!tweetId) {
+          tweetId = lastInteractedTweetId;
+        }
+
+        if (tweetId) {
+          console.log('[shelf] Un-bookmark action detected on X for tweet:', tweetId);
+          savedTweetIds.delete(tweetId);
+          persistSavedTweetIds(savedTweetIds);
+
+          chrome.runtime.sendMessage(
+            {
+              type: 'DELETE_BOOKMARK',
+              tweetId,
+            },
+            (response) => {
+              if (response && response.success) {
+                console.log('[shelf] Bookmark auto-removed from Shelf library:', tweetId);
+                showRemovalNotice(tweetId);
+              }
+            }
+          );
+        }
       }
+    } catch (unbookErr) {
+      console.error('[shelf] Error in un-bookmark click listener:', unbookErr);
     }
   },
-  true // Use capture phase to inspect DOM before Twitter mutates/unmounts
+  true
 );
 
-// Listen for START_CAPTURE message from popup or shortcuts
+// Listen for messages from popup or shortcuts
 chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
-  if (req.action === 'START_CAPTURE') {
-    startCapture();
-    sendResponse({ started: true });
+  try {
+    if (req.action === 'START_CAPTURE') {
+      if (isCapturing) {
+        sendResponse({ started: false, alreadyRunning: true });
+      } else {
+        startCapture();
+        sendResponse({ started: true });
+      }
+      return true;
+    }
+
+    if (req.action === 'STOP_CAPTURE') {
+      stopCapture();
+      sendResponse({ stopped: true });
+      return true;
+    }
+  } catch (msgErr) {
+    console.error('[shelf] Error in content script onMessage listener:', msgErr);
+    sendResponse({ error: String(msgErr) });
+    return true;
   }
 });
 
-// Watchdog interval to make sure pill never disappears
+// Watchdog interval to make sure pill stays anchored
 setInterval(ensureWidget, 600);
 
 // Observe URL changes (single-page application navigation on X)
@@ -703,4 +983,3 @@ new MutationObserver(() => {
 }).observe(document, { subtree: true, childList: true });
 
 ensureWidget();
-checkAutoSync();

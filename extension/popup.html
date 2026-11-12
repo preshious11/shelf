@@ -131,7 +131,7 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" id="stats-card">
     <div class="stat-row">
       <span class="stat-label">Last sync</span>
       <span class="stat-val" id="last-sync-time">Never</span>
@@ -142,9 +142,21 @@
     </div>
   </div>
 
+  <div class="card" id="sync-progress-card" style="display: none; border-color: var(--accent);">
+    <div class="stat-row">
+      <span class="stat-label">Live Status</span>
+      <span class="stat-val" id="sync-status-val" style="color: var(--accent);">Syncing…</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Bookmarks saved</span>
+      <span class="stat-val" id="sync-progress-count">0</span>
+    </div>
+    <button id="stop-sync-btn" class="btn" style="margin-top: 8px; background: rgba(239, 68, 68, 0.1); color: #EF4444; border-color: rgba(239, 68, 68, 0.3);">Stop Sync</button>
+  </div>
+
   <div class="actions">
     <a href="#" class="btn btn-primary" id="open-library-btn">Open Library</a>
-    <a href="#" class="btn btn-secondary" id="open-bookmarks-btn">Go to X Bookmarks</a>
+    <a href="#" class="btn btn-secondary" id="open-bookmarks-btn">Save Bookmarks on X</a>
     <a href="#" class="btn btn-secondary" id="open-options-btn">Options</a>
   </div>
 

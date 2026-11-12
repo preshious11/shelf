@@ -164,7 +164,7 @@ export function extractTweetFromElement(tweetEl: Element): ExtractedTweet | null
       is_thread: isThread,
     };
   } catch (err) {
-    console.error('Error extracting tweet element:', err);
+    console.error('[shelf] Error extracting tweet element:', err);
     return null;
   }
 }

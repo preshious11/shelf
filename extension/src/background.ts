@@ -147,55 +147,72 @@ async function sendBatchToShelf(batch: unknown[]): Promise<{ added: number; skip
 
 // Listen for messages from content scripts or popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'INGEST_BATCH') {
-    sendBatchToShelf(message.batch)
-      .then((result) => {
-        sendResponse({ success: true, ...result });
-      })
-      .catch((err: unknown) => {
-        const errorMsg = err instanceof Error ? err.message : 'Unknown ingest error';
-        console.error('[Shelf Background] Ingest error:', errorMsg);
-        sendResponse({ success: false, error: errorMsg });
-      });
-    return true; // Keep message channel open for async response
-  }
+  try {
+    if (message.type === 'INGEST_BATCH') {
+      sendBatchToShelf(message.batch)
+        .then((result) => {
+          sendResponse({ success: true, ...result });
+        })
+        .catch((err: unknown) => {
+          const errorMsg = err instanceof Error ? err.message : 'Unknown ingest error';
+          console.error('[shelf] Ingest error:', errorMsg);
+          sendResponse({ success: false, error: errorMsg });
+        });
+      return true; // Keep message channel open for async response
+    }
 
-  if (message.type === 'DELETE_BOOKMARK') {
-    deleteBookmarkFromShelf(message.tweetId)
-      .then((result) => {
-        sendResponse(result);
-      })
-      .catch((err: unknown) => {
-        const errorMsg = err instanceof Error ? err.message : 'Failed to delete bookmark';
-        console.error('[Shelf Background] Delete error:', errorMsg);
-        sendResponse({ success: false, error: errorMsg });
-      });
-    return true;
-  }
+    if (message.type === 'DELETE_BOOKMARK') {
+      deleteBookmarkFromShelf(message.tweetId)
+        .then((result) => {
+          sendResponse(result);
+        })
+        .catch((err: unknown) => {
+          const errorMsg = err instanceof Error ? err.message : 'Failed to delete bookmark';
+          console.error('[shelf] Delete error:', errorMsg);
+          sendResponse({ success: false, error: errorMsg });
+        });
+      return true;
+    }
 
-  if (message.type === 'GET_KNOWN_IDS') {
-    fetchKnownBookmarkIds()
-      .then((result) => {
-        sendResponse(result);
-      })
-      .catch((err: unknown) => {
-        const errorMsg = err instanceof Error ? err.message : 'Failed to get known IDs';
-        console.error('[Shelf Background] Known IDs error:', errorMsg);
-        sendResponse({ success: false, error: errorMsg });
-      });
-    return true;
-  }
+    if (message.type === 'GET_KNOWN_IDS') {
+      fetchKnownBookmarkIds()
+        .then((result) => {
+          sendResponse(result);
+        })
+        .catch((err: unknown) => {
+          const errorMsg = err instanceof Error ? err.message : 'Failed to get known IDs';
+          console.error('[shelf] Known IDs error:', errorMsg);
+          sendResponse({ success: false, error: errorMsg });
+        });
+      return true;
+    }
 
-  if (message.type === 'GET_SETTINGS') {
-    getStoredSettings().then((settings) => {
-      sendResponse(settings);
-    });
-    return true;
-  }
+    if (message.type === 'GET_SETTINGS') {
+      getStoredSettings()
+        .then((settings) => {
+          sendResponse(settings);
+        })
+        .catch((err: unknown) => {
+          const errorMsg = err instanceof Error ? err.message : 'Failed to get settings';
+          console.error('[shelf] Settings error:', errorMsg);
+          sendResponse({ appUrl: 'https://shelf-drab-kappa.vercel.app', apiToken: '', error: errorMsg });
+        });
+      return true;
+    }
 
-  if (message.type === 'OPEN_OPTIONS') {
-    chrome.runtime.openOptionsPage();
-    sendResponse({ success: true });
+    if (message.type === 'OPEN_OPTIONS') {
+      chrome.runtime.openOptionsPage();
+      sendResponse({ success: true });
+      return true;
+    }
+
+    // Fallback for unhandled message
+    sendResponse({ success: false, error: `Unhandled message type: ${message.type}` });
+    return false;
+  } catch (syncErr: unknown) {
+    const errorMsg = syncErr instanceof Error ? syncErr.message : 'Synchronous error';
+    console.error('[shelf] onMessage handler error:', errorMsg);
+    sendResponse({ success: false, error: errorMsg });
     return true;
   }
 });

@@ -10,3 +10,4 @@ begin;
   alter table public.bookmarks replica identity full;
   alter table public.categories replica identity full;
 commit;
+
