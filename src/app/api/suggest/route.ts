@@ -135,12 +135,12 @@ Rules:
     // 4. Initialize Gemini with resilient multi-model fallback and retry
     const genAI = new GoogleGenerativeAI(apiKey);
     const candidateModels = [
-      'gemini-3.5-flash',
-      'gemini-3.6-flash',
-      process.env.GEMINI_MODEL || 'gemini-3.5-flash',
-      'gemini-3.5-flash-lite',
-      'gemini-3.8-flash',
-    ].filter((m, i, arr) => arr.indexOf(m) === i); // deduplicate
+      process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+      'gemini-2.5-flash',
+      'gemini-2.0-flash',
+      'gemini-1.5-flash',
+      'gemini-1.5-flash-8b',
+    ].filter((m, i, arr) => arr.indexOf(m) === i && Boolean(m)); // deduplicate
 
     let result: any = null;
     let usedModel = '';

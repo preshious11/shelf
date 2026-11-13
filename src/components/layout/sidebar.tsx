@@ -57,6 +57,13 @@ export function Sidebar({
   const pathname = usePathname();
   const { resolvedTheme, toggleTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
+  const [isMac, setIsMac] = React.useState(false);
+
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setIsMac(/(Mac|iPhone|iPod|iPad)/i.test(navigator.platform || navigator.userAgent));
+    }
+  }, []);
 
   return (
     <aside
@@ -286,7 +293,7 @@ export function Sidebar({
         {/* Keyboard shortcut hint */}
         <div className="px-2 pt-1 flex items-center justify-between text-[10px] font-mono text-[#71717A] dark:text-[#A1A1AA]">
           <span>/ Search</span>
-          <span>⌘K Commands</span>
+          <span>{isMac ? '⌘K Commands' : 'Ctrl+K Commands'}</span>
         </div>
       </div>
     </aside>

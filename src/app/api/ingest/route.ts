@@ -44,7 +44,7 @@ async function verifyApiToken(request: NextRequest) {
   if (tokenError) {
     console.error('[Ingest] Database error verifying API token:', tokenError);
     return {
-      error: `Database error verifying API token: ${tokenError.message}. Check SUPABASE_SERVICE_ROLE_KEY in .env.`,
+      error: 'Internal server error verifying authorization token',
       status: 500,
     };
   }
@@ -82,7 +82,7 @@ export async function GET(request: NextRequest) {
 
     if (error) {
       console.error('[Ingest GET] Error fetching existing tweet IDs:', error);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ error: 'Failed to retrieve saved bookmark identifiers' }, { status: 500 });
     }
 
     const existingIds = (existingRows || []).map((r: any) => String(r.tweet_id));
@@ -94,8 +94,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (err: unknown) {
     console.error('[Ingest GET] Unexpected error:', err);
-    const msg = err instanceof Error ? err.message : 'Internal Server Error';
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }
 
@@ -137,7 +136,7 @@ export async function DELETE(request: NextRequest) {
 
     if (error) {
       console.error('[Ingest DELETE] Failed to delete bookmark:', error);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ error: 'Failed to delete bookmark' }, { status: 500 });
     }
 
     console.log(`[Ingest DELETE] Removed tweet ${tweetId} from Shelf (rows affected: ${count})`);
@@ -148,8 +147,7 @@ export async function DELETE(request: NextRequest) {
     });
   } catch (err: unknown) {
     console.error('[Ingest DELETE] Unexpected error:', err);
-    const msg = err instanceof Error ? err.message : 'Internal Server Error';
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }
 
@@ -231,7 +229,7 @@ export async function POST(request: NextRequest) {
       if (insertError) {
         console.error('[Ingest POST] Error inserting bookmarks:', insertError);
         return NextResponse.json(
-          { error: 'Database insert failed: ' + insertError.message },
+          { error: 'Failed to insert bookmarks into database' },
           { status: 500 }
         );
       }
@@ -246,7 +244,6 @@ export async function POST(request: NextRequest) {
     });
   } catch (error: unknown) {
     console.error('[Ingest POST] Ingest error:', error);
-    const msg = error instanceof Error ? error.message : 'Internal Server Error';
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }

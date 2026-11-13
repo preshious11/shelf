@@ -1,4 +1,4 @@
-import type { ExtractedTweet } from './extractor';
+import type { ExtractedTweet } from './types';
 import { parseBookmarksApiResponse, type ParsedBookmarksPage } from './bookmarks_parser';
 
 // Global state

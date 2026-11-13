@@ -59,8 +59,11 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  // Inject authenticated user ID into request headers to avoid duplicate getUser() roundtrips in Server Components
+  // Strip any client-supplied user headers to prevent header spoofing / trust-boundary injection
   const requestHeaders = new Headers(request.headers);
+  requestHeaders.delete('x-user-id');
+  requestHeaders.delete('x-user-email');
+
   if (user) {
     requestHeaders.set('x-user-id', user.id);
     if (user.email) {

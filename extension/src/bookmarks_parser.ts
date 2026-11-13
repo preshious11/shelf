@@ -1,4 +1,4 @@
-import type { ExtractedTweet } from './extractor';
+import type { ExtractedTweet } from './types';
 
 export interface ParsedBookmarksPage {
   tweets: ExtractedTweet[];

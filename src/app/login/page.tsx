@@ -51,7 +51,7 @@ export default function LoginPage() {
           router.push('/');
           router.refresh();
         } else {
-          setError('Sign up succeeded but session was not created. Ensure email confirmation is disabled in Supabase.');
+          setError('Sign up succeeded! Please check your email for a confirmation link before signing in.');
           setLoading(false);
         }
       } else {

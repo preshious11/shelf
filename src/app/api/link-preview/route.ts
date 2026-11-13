@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isSafePublicUrl } from '@/lib/ssrf';
 
 export const dynamic = 'force-dynamic';
 
@@ -109,16 +110,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Missing url parameter' }, { status: 400 });
   }
 
-  let targetUrl: URL;
-  try {
-    targetUrl = new URL(urlParam);
-    if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
-      return NextResponse.json({ error: 'Only http and https URLs supported' }, { status: 400 });
-    }
-  } catch {
-    return NextResponse.json({ error: 'Invalid URL format' }, { status: 400 });
+  // SSRF Protection: strictly validate URL scheme and ensure non-internal destination
+  const validation = isSafePublicUrl(urlParam);
+  if (!validation.safe || !validation.url) {
+    return NextResponse.json({ error: validation.reason || 'Invalid or disallowed URL' }, { status: 400 });
   }
 
+  const targetUrl = validation.url;
   const rawUrl = targetUrl.toString();
 
   // Check in-memory cache
@@ -150,25 +148,47 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  // Fetch HTML metadata from destination site
+  // Fetch HTML metadata from destination site with SSRF-safe redirect verification
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 4500); // 4.5s max
 
-    const response = await fetch(rawUrl, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 (compatible; ShelfBot/1.0)',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
-      redirect: 'follow',
-    });
+    let currentUrl = rawUrl;
+    let response: Response | null = null;
+    let hops = 0;
+
+    while (hops < 3) {
+      const hopValidation = isSafePublicUrl(currentUrl);
+      if (!hopValidation.safe) {
+        throw new Error('Redirected to disallowed location');
+      }
+
+      const res: Response = await fetch(currentUrl, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 (compatible; ShelfBot/1.0)',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        redirect: 'manual',
+      });
+
+      if ([301, 302, 303, 307, 308].includes(res.status)) {
+        const location = res.headers.get('location');
+        if (!location) break;
+        currentUrl = new URL(location, currentUrl).toString();
+        hops++;
+        continue;
+      }
+
+      response = res;
+      break;
+    }
 
     clearTimeout(timeoutId);
 
-    if (!response.ok) {
+    if (!response || !response.ok) {
       const fallback: LinkPreviewData = {
         url: rawUrl,
         domain: targetUrl.hostname.replace(/^www\./, ''),

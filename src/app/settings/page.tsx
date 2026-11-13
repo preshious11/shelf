@@ -116,6 +116,22 @@ export default function SettingsPage() {
 
       const tokenHash = await hashToken(rawToken);
 
+      if (userId === 'demo-user') {
+        const mockToken: ApiToken = {
+          id: 'demo-tok-' + Date.now(),
+          user_id: 'demo-user',
+          name: newTokenName.trim(),
+          token_hash: tokenHash,
+          created_at: new Date().toISOString(),
+          last_used_at: null,
+        };
+        setTokens((prev) => [mockToken, ...prev]);
+        setRawGeneratedToken(rawToken);
+        setNewTokenName('');
+        setLoadingToken(false);
+        return;
+      }
+
       const { data, error } = await supabase
         .from('api_tokens')
         .insert({
@@ -143,6 +159,11 @@ export default function SettingsPage() {
 
   const handleRevokeToken = async (id: string) => {
     if (!window.confirm('Are you sure you want to revoke this API token? Any extension using it will stop working.')) {
+      return;
+    }
+
+    if (userId === 'demo-user') {
+      setTokens((prev) => prev.filter((t) => t.id !== id));
       return;
     }
 

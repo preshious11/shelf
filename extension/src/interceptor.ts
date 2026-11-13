@@ -15,6 +15,7 @@
 
   let lastCapturedAuth = '';
   let lastCapturedCsrf = '';
+  let lastCapturedHeaders: Record<string, string> = {};
   let lastDeleteBookmarkQueryId = 'Wlmlj2-xzyS1GN3a6cj-mQ';
 
   // Helper to extract clean lowercase headers from various header types
@@ -71,6 +72,7 @@
         }
         if (reqHeaders['authorization']) lastCapturedAuth = reqHeaders['authorization'];
         if (reqHeaders['x-csrf-token']) lastCapturedCsrf = reqHeaders['x-csrf-token'];
+        lastCapturedHeaders = { ...lastCapturedHeaders, ...reqHeaders };
 
         const deleteMatch = url.match(DELETE_BOOKMARK_REGEX);
         if (deleteMatch && deleteMatch[1]) {
@@ -97,6 +99,16 @@
           headers = { ...headers, ...extractHeaders(config.headers) };
         }
 
+        if (headers['authorization']) lastCapturedAuth = headers['authorization'];
+        if (headers['x-csrf-token']) lastCapturedCsrf = headers['x-csrf-token'];
+        lastCapturedHeaders = { ...lastCapturedHeaders, ...headers };
+
+        // SECURITY: Sanitize credentials so tokens are NEVER broadcasted over window.postMessage
+        const safeHeaders = { ...headers };
+        delete safeHeaders['authorization'];
+        delete safeHeaders['x-csrf-token'];
+        delete safeHeaders['cookie'];
+
         const body =
           config.body ||
           (resource instanceof Request ? (resource as any)._bodyInit : undefined);
@@ -111,7 +123,7 @@
                 type: 'SHELF_BOOKMARKS_INTERCEPTED',
                 url,
                 method,
-                headers,
+                headers: safeHeaders,
                 body: typeof body === 'string' ? body : undefined,
                 response: jsonData,
               },
@@ -164,6 +176,7 @@
         const xhrHeaders = (this as any).__shelf_headers || {};
         if (xhrHeaders['authorization']) lastCapturedAuth = xhrHeaders['authorization'];
         if (xhrHeaders['x-csrf-token']) lastCapturedCsrf = xhrHeaders['x-csrf-token'];
+        lastCapturedHeaders = { ...lastCapturedHeaders, ...xhrHeaders };
 
         const deleteMatch = url.match(DELETE_BOOKMARK_REGEX);
         if (deleteMatch && deleteMatch[1]) {
@@ -176,13 +189,24 @@
       this.addEventListener('load', function () {
         try {
           if (this.status >= 200 && this.status < 300 && this.responseText) {
+            const rawHeaders = (this as any).__shelf_headers || {};
+            if (rawHeaders['authorization']) lastCapturedAuth = rawHeaders['authorization'];
+            if (rawHeaders['x-csrf-token']) lastCapturedCsrf = rawHeaders['x-csrf-token'];
+            lastCapturedHeaders = { ...lastCapturedHeaders, ...rawHeaders };
+
+            // SECURITY: Sanitize credentials before window.postMessage
+            const safeHeaders = { ...rawHeaders };
+            delete safeHeaders['authorization'];
+            delete safeHeaders['x-csrf-token'];
+            delete safeHeaders['cookie'];
+
             const jsonData = JSON.parse(this.responseText);
             window.postMessage(
               {
                 type: 'SHELF_BOOKMARKS_INTERCEPTED',
                 url,
                 method: (this as any).__shelf_method || 'GET',
-                headers: (this as any).__shelf_headers || {},
+                headers: safeHeaders,
                 body: typeof body === 'string' ? body : undefined,
                 response: jsonData,
               },
@@ -203,9 +227,20 @@
       const { requestId, url, method, headers, body } = event.data;
 
       try {
+        const fetchHeaders: Record<string, string> = {
+          ...lastCapturedHeaders,
+          ...(headers || {}),
+        };
+        if (lastCapturedAuth && !fetchHeaders['authorization']) {
+          fetchHeaders['authorization'] = lastCapturedAuth;
+        }
+        if (lastCapturedCsrf && !fetchHeaders['x-csrf-token']) {
+          fetchHeaders['x-csrf-token'] = lastCapturedCsrf;
+        }
+
         const fetchOptions: RequestInit = {
           method: method || 'GET',
-          headers: headers || {},
+          headers: fetchHeaders,
           credentials: 'include',
         };
         if (body && method !== 'GET' && method !== 'HEAD') {

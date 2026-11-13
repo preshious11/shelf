@@ -258,6 +258,7 @@ export function CommandPalette({
           <div className="flex items-center gap-3">
             <span>↑↓ to navigate</span>
             <span>↵ to select</span>
+            <span>esc to close</span>
           </div>
           <span>Shelf Palette</span>
         </div>
