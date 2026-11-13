@@ -78,7 +78,7 @@
         if (deleteMatch && deleteMatch[1]) {
           lastDeleteBookmarkQueryId = deleteMatch[1];
         }
-      } catch {}
+      } catch { }
     }
 
     // Call original fetch without modifying the caller's request
@@ -182,7 +182,7 @@
         if (deleteMatch && deleteMatch[1]) {
           lastDeleteBookmarkQueryId = deleteMatch[1];
         }
-      } catch {}
+      } catch { }
     }
 
     if (BOOKMARKS_GRAPHQL_REGEX.test(url)) {
@@ -255,7 +255,7 @@
           let errorText = '';
           try {
             errorText = await res.text();
-          } catch {}
+          } catch { }
 
           window.postMessage(
             {

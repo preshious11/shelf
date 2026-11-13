@@ -37,3 +37,4 @@ export interface StoredSettings {
   apiToken: string;
   autoSyncOnOpen: boolean;
 }
+
